@@ -4,11 +4,12 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+use duck_runtime::bench::{self, Excitation};
 use duck_runtime::bridge::{Bridge, ROUTER_SOCKET};
 use duck_runtime::control;
 use duck_runtime::firmware;
 use duck_runtime::policy::{Manifest, Policy, Sensed};
-use duck_runtime::robot::Robot;
+use duck_runtime::robot::{Robot, JOINT_NAMES};
 use duck_runtime::record::Recorder;
 use duck_runtime::status_led::StatusLed;
 
@@ -39,31 +40,52 @@ usage:
       yellow = the policy could not run (an input was missing), red = the exchange failed; off when duckd exits.
       With --record, every tick's measured joints, sent targets and IMU go into an MCAP file (ROS 2 messages) that
       trainnr's ingest_recording reads.
+  duckd bench --joint NAME --supervised [--excite chirp|steps] [--amplitude 10] [--seconds 20] [--hz 100]
+              [--record FILE.mcap] [--socket PATH]
+      MOVES ONE SERVO, for measuring it. Needs a bench build of the firmware (DUCK_BENCH_MOTION 1), the joint's
+      entry calibrated in robot.json, the servo free to turn, and someone watching with the power at hand; say so
+      with --supervised. Arms that joint alone, moves it around where it is (+- amplitude degrees, faded in and
+      out; chirp 0.1 to 2 Hz, or steps every second), then switches it off. The firmware keeps it inside the joint's
+      limits and speed limit and switches it off on any fault, or when duckd stops talking. --record writes the
+      targets asked for, the goals the firmware wrote after its clamp and speed limit, and the servo's reads
+      (position and its own speed report) stamped when it was read; at the default 100 Hz, every read.
 ";
 
 struct Args {
     command: String,
     socket: String,
     robot: Option<String>,
-    hz: f64,
+    /// Loop rate; `run` defaults to 50 Hz, `bench` to the firmware's 100 Hz tick.
+    hz: Option<f64>,
     seconds: f64,
     count: u32,
     exchange: control::Exchange,
     policy: Option<String>,
     record: Option<String>,
+    joint: Option<String>,
+    excite: String,
+    amplitude_deg: f64,
+    supervised: bool,
     /// `duckd say`'s text.
     text: Option<String>,
 }
 
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
-    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, record: None, text: None };
+    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: None, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, record: None, text: None, joint: None, excite: "chirp".into(), amplitude_deg: 10.0, supervised: false };
     while let Some(flag) = argv.next() {
+        if flag == "--supervised" {
+            args.supervised = true;
+            continue;
+        }
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
+            "--joint" => args.joint = Some(value()?),
+            "--excite" => args.excite = value()?,
+            "--amplitude" => args.amplitude_deg = value()?.parse().map_err(|_| "--amplitude needs a number (degrees)")?,
             "--socket" => args.socket = value()?,
             "--robot" => args.robot = Some(value()?),
-            "--hz" => args.hz = value()?.parse().map_err(|_| "--hz needs a number")?,
+            "--hz" => args.hz = Some(value()?.parse().map_err(|_| "--hz needs a number")?),
             "--seconds" => args.seconds = value()?.parse().map_err(|_| "--seconds needs a number")?,
             "--exchange" => {
                 args.exchange = match value()?.as_str() {
@@ -86,7 +108,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
             other => return Err(format!("unknown option {other}")),
         }
     }
-    if !(args.hz.is_finite() && args.hz > 0.0 && args.hz <= 1000.0) {
+    if args.hz.is_some_and(|hz| !(hz.is_finite() && hz > 0.0 && hz <= 1000.0)) {
         return Err("--hz must be between 0 and 1000".into());
     }
     if !(args.seconds.is_finite() && args.seconds > 0.0) {
@@ -110,6 +132,80 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Ctrl-C or SIGTERM sets `control::STOP`, which ends a loop after its tick; a second one exits at once.
+fn stop_on_signal() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {
+        if control::STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            std::process::exit(130);
+        }
+    })
+}
+
+/// `duckd bench`: one servo, armed alone, moved and switched off again (whatever happens in between).
+fn bench_command(args: &Args, bridge: &mut Bridge<std::os::unix::net::UnixStream>) -> Result<(), Box<dyn std::error::Error>> {
+    let name = args.joint.as_deref().ok_or("bench needs --joint NAME")?;
+    let joint = JOINT_NAMES.iter().position(|n| *n == name).ok_or_else(|| format!("no joint `{name}`; the joints are {JOINT_NAMES:?}"))?;
+    let excitation = match args.excite.as_str() {
+        "chirp" => Excitation::Chirp { from_hz: 0.1, to_hz: 2.0 },
+        "steps" => Excitation::Steps { period_s: 2.0 },
+        _ => return Err("--excite must be chirp or steps".into()),
+    };
+    if !(args.amplitude_deg > 0.0 && args.amplitude_deg <= 30.0) {
+        return Err("--amplitude must be more than 0 and at most 30 degrees".into());
+    }
+    if !args.supervised {
+        return Err("bench moves a servo. Run it only with the servo free to turn and someone watching with the power \
+                    at hand, and say so with --supervised"
+            .into());
+    }
+    if !firmware::info(bridge)?.bench_build {
+        return Err("the firmware is not a bench build: set DUCK_ENABLE_MOTION 1 and DUCK_BENCH_MOTION 1 in \
+                    duck_build_config.h, push the app, and go back to the default build afterwards"
+            .into());
+    }
+    // The file first: a path that cannot be written is found before anything moves.
+    let mut recorder = args.record.as_deref().map(Recorder::create).transpose()?;
+    // Ctrl-C ends the run after its tick (at most 10 ms), and then the servo is switched off; a second Ctrl-C does
+    // not skip that.
+    ctrlc::set_handler(|| control::STOP.store(true, std::sync::atomic::Ordering::Relaxed))?;
+    let hz = args.hz.unwrap_or(100.0);
+    // From the arm request on, every way out goes through the disarm below: even a lost reply may have armed it.
+    let outcome = (|| -> Result<bench::BenchRun, Box<dyn std::error::Error>> {
+        let armed = firmware::bench_arm(bridge, joint)?;
+        if armed != "ok" {
+            return Err(format!("the firmware refused to arm `{name}`: {armed}").into());
+        }
+        let start = firmware::bench_step(bridge, None)?.setpoint;
+        println!("`{name}` armed at {:.1} deg; {} +- {} deg for {} s at {hz} Hz", start.to_degrees(), args.excite, args.amplitude_deg, args.seconds);
+        Ok(bench::run(
+            bridge,
+            start,
+            args.amplitude_deg.to_radians(),
+            excitation,
+            Duration::from_secs_f64(args.seconds),
+            Duration::from_secs_f64(1.0 / hz),
+        ))
+    })();
+    let disarmed = firmware::bench_disarm(bridge);
+    let run = outcome?;
+    disarmed?;
+    println!("switched off. {} ticks", run.samples.len());
+    if let Some(why) = &run.stopped {
+        println!("ended early: {why}");
+    }
+    if let Some(r) = run.last.as_ref().and_then(|b| b.reading.as_ref()) {
+        println!("last read: {:.1} V, {} C, load {:.1} %", r.voltage, r.temperature_c, r.load_percent);
+    }
+    if let (Some(recorder), Some(path)) = (recorder.as_mut(), &args.record) {
+        let reads = recorder.bench(name, &run.samples)?;
+        println!("recorded {} targets and {reads} servo reads to {path}", run.samples.len());
+    }
+    if let Some(recorder) = recorder {
+        recorder.finish()?;
+    }
+    Ok(())
 }
 
 fn load_policy(args: &Args, robot: &Robot) -> Result<Option<Policy>, Box<dyn std::error::Error>> {
@@ -167,6 +263,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             println!("on the matrix: {kept} characters");
             Ok(())
         }
+        "bench" => bench_command(args, &mut bridge),
         "time" => {
             // Read-only calls with replies of different sizes (values in the reply shown in brackets).
             let zeros = || vec![rmpv::Value::Array(vec![rmpv::Value::from(0); 15])];
@@ -206,7 +303,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let hz = policy.as_ref().map_or(args.hz, |p| p.manifest().control_hz);
+            let hz = policy.as_ref().map_or(args.hz.unwrap_or(50.0), |p| p.manifest().control_hz);
             let command = vec![0.0; policy.as_ref().map_or(0, |p| p.manifest().command_size())];
             let period = Duration::from_secs_f64(1.0 / hz);
             println!(
@@ -221,11 +318,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 println!("policy `{}`, zero command", p.manifest().name);
             }
             // Ctrl-C or SIGTERM: finish the tick, report, and put the light out. A second one exits at once.
-            ctrlc::set_handler(|| {
-                if control::STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    std::process::exit(130);
-                }
-            })?;
+            stop_on_signal()?;
             let led = StatusLed::find();
             println!("status light (LED1): {}", if led.present() { "yes" } else { "not found" });
             let recorder = args.record.as_deref().map(Recorder::create).transpose()?;

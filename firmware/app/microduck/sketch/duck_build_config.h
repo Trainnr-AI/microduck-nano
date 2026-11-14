@@ -11,6 +11,17 @@
 #define DUCK_ENABLE_MOTION 0
 #endif
 
+// 1 = bench build: one servo can be armed ON ITS OWN (duck_bench_arm) to measure it for system identification,
+//     with the other joints uncalibrated. Only that servo is written, inside its limits and speed limit, with the
+//     fault checks running; it goes limp when the Linux side stops sending (src/duck/bench.h). Needs
+//     DUCK_ENABLE_MOTION 1 as well. For a supervised bench with the servo free to turn, never in the robot.
+#ifndef DUCK_BENCH_MOTION
+#define DUCK_BENCH_MOTION 0
+#endif
+#if DUCK_BENCH_MOTION && !DUCK_ENABLE_MOTION
+#error "DUCK_BENCH_MOTION needs DUCK_ENABLE_MOTION 1"
+#endif
+
 // 1 = provisioning build: adds the commands that write servo EEPROM (angle
 //     limits, protection settings, servo ID). One servo on the bus at a time
 //     for ID changes. Never leave this on in the robot's normal firmware.

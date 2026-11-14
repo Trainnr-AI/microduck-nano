@@ -17,6 +17,7 @@
 #pragma once
 #include <stdint.h>
 
+#include "bench.h"
 #include "controller.h"
 
 namespace duck {
@@ -59,11 +60,12 @@ struct DisplayInput {
   uint32_t ms_since_command;         // since it last sent a command (targets, step, heartbeat, arm ...); or kNever
   const char* message;               // text from the Linux side (duck_say), or nullptr
   uint32_t ms_since_message;         // since it was sent; kNever if never
+  BenchState bench;                  // a bench build's single servo (mode kOff otherwise)
 };
 
 struct DisplayOutput {
   uint8_t matrix[kMatrixRows * kMatrixCols];  // row by row, grey levels 0..7
-  uint8_t led3;                               // Rgb bits. LED3: the safety mode
+  uint8_t led3;                               // Rgb bits. LED3: the safety mode (magenta: one servo armed on a bench)
   uint8_t led4;                               // Rgb bits. LED4: the link with the Linux side
 };
 

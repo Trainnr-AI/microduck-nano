@@ -508,3 +508,102 @@ fn nose_up_is_a_negative_rotation_about_y() {
     let q = orientation(0.0, 0.3); // left side up: positive about x
     assert!((q[0] - (0.15f64).sin()).abs() < 1e-12);
 }
+
+// ---------------------------------------------------------------- bench
+
+use duck_runtime::bench::{self, Excitation};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// A bench build with the left knee armed: each step reply reads the servo 10 ms later than the last, at 2 degrees.
+static BENCH_READ_MS: AtomicU32 = AtomicU32::new(5000);
+fn bench_firmware(method: &str) -> Option<Value> {
+    match method {
+        "duck_info" => Some(ints(&[3, 1, 0, 0, 0, 1, 1])),
+        "duck_bench_arm" | "duck_bench_disarm" => Some(Value::from(0)),
+        "duck_bench_step" => {
+            let read_ms = BENCH_READ_MS.fetch_add(10, Ordering::Relaxed);
+            Some(ints(&[0, 1, 0, 3, 1, 20, -15, 125, 50, 31, i64::from(read_ms), 20]))
+        }
+        other => bare_board(other),
+    }
+}
+
+/// The same, but the servo overheats on the third tick and the firmware switches it off.
+static FAULT_CALLS: AtomicU32 = AtomicU32::new(0);
+fn overheating_bench(method: &str) -> Option<Value> {
+    // its own replies: the tests run in parallel, and BENCH_READ_MS belongs to the other one
+    match method {
+        "duck_bench_step" if FAULT_CALLS.fetch_add(1, Ordering::Relaxed) >= 2 => Some(ints(&[6, 2, 2, 3, 1, 20, 0, 0, 50, 90, 0, 20])),
+        "duck_bench_step" => Some(ints(&[0, 1, 0, 3, 1, 20, 0, 0, 50, 60, 0, 20])),
+        other => bare_board(other),
+    }
+}
+
+#[test]
+fn the_excitation_starts_and_ends_at_rest() {
+    for excitation in [Excitation::Chirp { from_hz: 0.1, to_hz: 2.0 }, Excitation::Steps { period_s: 2.0 }] {
+        assert_eq!(excitation.at(0.0, 20.0), 0.0);
+        assert!(excitation.at(20.0, 20.0).abs() < 1e-12);
+        assert!((0..2000).all(|i| excitation.at(f64::from(i) * 0.01, 20.0).abs() <= 1.0));
+    }
+    assert_eq!(Excitation::Steps { period_s: 2.0 }.at(1.5, 20.0), -1.0);
+    assert_eq!(Excitation::Steps { period_s: 2.0 }.at(2.5, 20.0), 1.0);
+    assert_eq!(Excitation::Chirp { from_hz: 1.0, to_hz: 1.0 }.at(-1.0, 20.0), 0.0, "outside the run: rest");
+}
+
+#[test]
+fn a_bench_run_is_recorded_with_the_servos_own_read_times() {
+    let mut bridge = fake_router(bench_firmware);
+    assert!(firmware::info(&mut bridge).expect("info").bench_build);
+    assert_eq!(firmware::bench_arm(&mut bridge, 3).expect("arm"), "ok");
+    let first = firmware::bench_step(&mut bridge, None).expect("read");
+    assert_eq!((first.mode, first.joint), ("ARMED", Some(3)));
+    let r = first.reading.expect("a read");
+    assert!((r.position - 2f64.to_radians()).abs() < 1e-12 && (r.velocity + 1.5f64.to_radians()).abs() < 1e-12);
+    assert!((r.load_percent - 12.5).abs() < 1e-12 && (r.voltage - 5.0).abs() < 1e-12 && r.temperature_c == 31);
+
+    let run = bench::run(&mut bridge, 0.0, 0.1, Excitation::Chirp { from_hz: 0.5, to_hz: 2.0 }, Duration::from_millis(300), Duration::from_millis(20));
+    assert_eq!(run.stopped, None);
+    assert!(run.samples.len() >= 10, "{} ticks", run.samples.len());
+
+    let path = std::env::temp_dir().join(format!("duck-bench-{}.mcap", std::process::id()));
+    let mut recorder = Recorder::create(&path).expect("create");
+    let reads = recorder.bench("left_knee", &run.samples).expect("bench");
+    recorder.finish().expect("finish");
+    assert_eq!(reads, run.samples.len(), "every reply carried a new read");
+    let bytes = std::fs::read(&path).expect("read back");
+    let mut state_times = Vec::new();
+    let (mut commands, mut targets) = (Vec::new(), 0);
+    for message in mcap::MessageStream::new(&bytes).expect("an MCAP") {
+        let message = message.expect("a message");
+        match message.channel.topic.as_str() {
+            "/joint_states" => state_times.push(message.log_time),
+            "/joint_commands" => commands.push((message.log_time, message.data.to_vec())),
+            "/joint_targets" => targets += 1,
+            other => panic!("unexpected topic {other}"),
+        }
+    }
+    assert_eq!(targets, run.samples.len(), "every target asked for");
+    assert_eq!(commands.len(), reads, "one written goal per read");
+    // The command is the firmware's setpoint (2 degrees in every reply here), stamped with its read.
+    let (t, data) = &commands[0];
+    assert_eq!(*t, state_times[0]);
+    let last = f64::from_le_bytes(data[data.len() - 16..data.len() - 8].try_into().expect("8 bytes"));
+    assert!((last - 2f64.to_radians()).abs() < 1e-12, "{last}");
+    // Stamped by the microcontroller's clock: exactly 10 ms apart, whatever the link did.
+    assert!(state_times.windows(2).all(|w| w[1] - w[0] == 10_000_000), "{state_times:?}");
+    if let Ok(keep) = std::env::var("DUCK_KEEP_BENCH") {
+        std::fs::copy(&path, keep).expect("keep a copy");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_bench_run_stops_when_the_firmware_switches_the_servo_off() {
+    let mut bridge = fake_router(overheating_bench);
+    let run = bench::run(&mut bridge, 0.0, 0.1, Excitation::Steps { period_s: 1.0 }, Duration::from_secs(5), Duration::from_millis(10));
+    assert_eq!(run.samples.len(), 3);
+    let why = run.stopped.expect("stopped");
+    assert!(why.contains("FAULT") && why.contains("over-temperature"), "{why}");
+    assert_eq!(run.last.map(|b| b.result), Some("fault latched"));
+}

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Typed calls to the Microduck Nano microcontroller firmware (`firmware/app/microduck/sketch`).
 //!
-//! Every call here is read-only except [`step`], which sends joint targets. The firmware passes those through its
-//! own safety layer and ignores them unless it was built with motion enabled and has been armed.
+//! Every call here is read-only except [`step`], which sends joint targets, and the `bench_*` calls, which move one
+//! servo on its own. The firmware passes targets through its own safety layer and ignores them unless it was built
+//! with motion enabled (and, for the bench calls, as a bench build) and has been armed.
 
 use std::io::{Read, Write};
 
@@ -35,6 +36,8 @@ pub struct Info {
     pub joint_table_ready: bool,
     pub imu_present: bool,
     pub servo_uart_is_serial1: bool,
+    /// Built with DUCK_BENCH_MOTION: one servo can be armed on its own (absent from older firmware: false).
+    pub bench_build: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +65,7 @@ pub fn info<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Info, BridgeError
         joint_table_ready: field(&v, 3)? != 0,
         imu_present: field(&v, 4)? != 0,
         servo_uart_is_serial1: field(&v, 5)? != 0,
+        bench_build: v.get(6).is_some_and(|&b| b != 0),
     })
 }
 
@@ -147,10 +151,94 @@ pub fn step<S: Read + Write>(bridge: &mut Bridge<S>, targets: &[f64]) -> Result<
 /// (longer if it scrolls), then the firmware's status ticker returns; a fault always shows instead. An empty string
 /// clears it. Returns how many characters the firmware kept.
 pub fn say<S: Read + Write>(bridge: &mut Bridge<S>, text: &str) -> Result<i64, BridgeError> {
-    match bridge.call("duck_say", vec![rmpv::Value::from(text)])? {
-        rmpv::Value::Integer(n) => n.as_i64().ok_or(BridgeError::Shape("duck_say did not return a count")),
-        _ => Err(BridgeError::Shape("duck_say did not return a count")),
+    call_int(bridge, "duck_say", vec![rmpv::Value::from(text)])
+}
+
+/// The arm key the firmware expects (`duck::kArmKey`).
+pub const ARM_KEY: u32 = 0xD0C5_A4B3;
+
+fn call_int<S: Read + Write>(bridge: &mut Bridge<S>, method: &str, params: Vec<rmpv::Value>) -> Result<i64, BridgeError> {
+    match bridge.call(method, params)? {
+        rmpv::Value::Integer(n) => n.as_i64().ok_or(BridgeError::Shape("expected a whole number")),
+        _ => Err(BridgeError::Shape("expected a whole number")),
     }
+}
+
+/// What the firmware's bench servo did and read (bench build only; `duck_bench_step`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bench {
+    /// What the firmware did with the target this reply answers.
+    pub result: &'static str,
+    /// "OFF", "ARMED" or "FAULT".
+    pub mode: &'static str,
+    pub fault: &'static str,
+    /// The joint armed (or last armed), firmware order.
+    pub joint: Option<usize>,
+    /// The servo's last read, if it answered.
+    pub reading: Option<BenchReading>,
+    /// The goal written last, after the firmware's clamp and rate limit, radians.
+    pub setpoint: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchReading {
+    pub position: f64,
+    /// The servo's own speed report, rad/s.
+    pub velocity: f64,
+    /// Load as the servo reports it: a duty cycle in percent, signed in the joint's direction. Not a torque.
+    pub load_percent: f64,
+    pub voltage: f64,
+    pub temperature_c: i64,
+    /// When the microcontroller read it, on its own millisecond clock (wraps after 49 days).
+    pub read_ms: u32,
+}
+
+const BENCH_MODES: [&str; 3] = ["OFF", "ARMED", "FAULT"];
+
+/// Arm one joint's servo on its own (bench build). Returns the firmware's result: "ok" or why not.
+pub fn bench_arm<S: Read + Write>(bridge: &mut Bridge<S>, joint: usize) -> Result<&'static str, BridgeError> {
+    let joint = i64::try_from(joint).map_err(|_| BridgeError::Shape("joint index"))?;
+    let result = call_int(bridge, "duck_bench_arm", vec![rmpv::Value::from(ARM_KEY), rmpv::Value::from(joint)])?;
+    Ok(name(&RESULTS, result))
+}
+
+/// Send the bench servo's target (radians; `None`: no new target, just read) and get its state back.
+pub fn bench_step<S: Read + Write>(bridge: &mut Bridge<S>, target: Option<f64>) -> Result<Bench, BridgeError> {
+    let tenths = match target {
+        Some(t) if t.is_finite() => (t.to_degrees() * 10.0).round() as i64,
+        Some(_) => return Err(BridgeError::Shape("the bench target must be a finite number")),
+        None => MISSING,
+    };
+    let v = bridge.call_ints("duck_bench_step", vec![rmpv::Value::from(tenths)])?;
+    if v.len() != 12 {
+        return Err(BridgeError::Shape("bench reply is not 12 words"));
+    }
+    let deg10 = |i: usize| field(&v, i).map(|t| (t as f64 / 10.0).to_radians());
+    let reading = if field(&v, 4)? != 0 {
+        Some(BenchReading {
+            position: deg10(5)?,
+            velocity: deg10(6)?,
+            load_percent: field(&v, 7)? as f64 / 10.0,
+            voltage: field(&v, 8)? as f64 / 10.0,
+            temperature_c: field(&v, 9)?,
+            read_ms: field(&v, 10)? as u32,
+        })
+    } else {
+        None
+    };
+    Ok(Bench {
+        result: name(&RESULTS, field(&v, 0)?),
+        mode: name(&BENCH_MODES, field(&v, 1)?),
+        fault: name(&FAULTS, field(&v, 2)?),
+        joint: usize::try_from(field(&v, 3)?).ok(),
+        reading,
+        setpoint: deg10(11)?,
+    })
+}
+
+/// Torque off on the bench servo and forget a latched bench fault.
+pub fn bench_disarm<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<(), BridgeError> {
+    call_int(bridge, "duck_bench_disarm", vec![]).map(|_| ())
 }
 
 /// Measured joint angles in radians, in the firmware's joint order. `None` where the servo did not answer.

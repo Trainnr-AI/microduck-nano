@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "duck/bench.h"
 #include "duck/controller.h"
 #include "duck/display.h"
 #include "duck/fmath.h"
@@ -870,6 +871,8 @@ static void test_status_display() {
   in.ms_since_command = kNever;
   in.message = nullptr;
   in.ms_since_message = kNever;
+  in.bench.mode = BenchMode::kOff;
+  in.bench.joint = -1;
   DisplayOutput out;
   char text[kTextMax];
   auto px = [&](int row, int col) { return out.matrix[row * kMatrixCols + col]; };
@@ -953,6 +956,27 @@ static void test_status_display() {
   render_display(in, 1150, &out);
   CHECK(out.led3 == kRgbRed && px(6, 3) == 0);
 
+  // A servo armed on the bench: magenta, said in words, outranking a message; its dot blinks. A bench fault: red.
+  in.status.mode = Mode::kDisarmed;
+  in.status.fault = Fault::kNone;
+  in.status.fault_joint = -1;
+  in.bench.mode = BenchMode::kArmed;
+  in.bench.joint = kLKnee;
+  in.ms_since_message = 0;
+  display_text(in, text);
+  CHECK(strcmp(text, "BENCH L KNEE") == 0);
+  render_display(in, 1000, &out);
+  CHECK(out.led3 == kRgbMagenta && px(6, 3) == kLedFull);
+  render_display(in, 1150, &out);
+  CHECK(px(6, 3) == 0);
+  in.bench.mode = BenchMode::kFault;
+  in.bench.fault = Fault::kOverload;
+  display_text(in, text);
+  CHECK(strcmp(text, "BENCH FAULT OVERLOAD L KNEE") == 0);
+  render_display(in, 1000, &out);
+  CHECK(out.led3 == kRgbRed);
+  in.bench.mode = BenchMode::kOff;
+
   // Every printable character has a glyph or falls back to '?', and lower case draws as upper case.
   CHECK(text_width("") == 0 && text_width("A") == 3 && text_width("ABC") == 11);
   in.status.mode = Mode::kDisarmed;
@@ -980,6 +1004,105 @@ static void test_bench_servo_polled_every_turn() {
   r2.run(11);  // polls at the first tick and 100 ms later
   CHECK(r2.ctl.feedback_valid(kLKnee) && r2.ctl.feedback_valid(kBeak));
   CHECK(!r2.fake.any_motion_write() && r2.fake.torque_count() == 0);
+}
+
+static void test_bench_servo() {
+  // One servo armed on its own: only that servo is written, inside its limits and speed, faults and silence
+  // switch it off, and a build without bench motion cannot arm it at all.
+  RobotConfig c = kRobotConfig;
+  for (int j = 0; j < kNumJoints; ++j) {
+    c.joints[j].servo_id = kServoIdUnassigned;
+    c.joints[j].calibrated = false;
+  }
+  c.joints[kLKnee].servo_id = 7;
+  c.joints[kLKnee].zero_step = 512;
+  c.joints[kLKnee].direction = 1;
+  c.joints[kLKnee].calibrated = true;
+  const JointConfig& knee = c.joints[kLKnee];
+  CHECK(!config_ready_for_motion(c));  // the robot could not be armed with this table
+
+  FakeBus fake;
+  ScsBus bus(fake);
+  fake.add(7);
+  fake.add(8);  // another servo on the bus, never to be touched
+
+  {  // a build without bench motion
+    BenchServo off(c, bus, false);
+    CHECK(off.arm(kArmKey, kLKnee, 0) == Result::kMotionBuildDisabled);
+    off.tick(10, false);
+    CHECK(!fake.any_motion_write() && fake.torque_count() == 0);
+  }
+
+  BenchServo b(c, bus, true);
+  uint32_t now = 1000;
+  CHECK(b.arm(0, kLKnee, now) == Result::kBadKey);
+  CHECK(b.arm(kArmKey, kRKnee, now) == Result::kNotCalibrated);
+  CHECK(b.arm(kArmKey, 99, now) == Result::kNotCalibrated);
+  fake.servo[7].present = false;
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kServoMissing);
+  fake.servo[7].present = true;
+  CHECK(!fake.any_motion_write() && fake.torque_count() == 0);
+  CHECK(b.set_target(10.0f, now) == Result::kNotArmed);
+
+  // Armed: torque on that servo only, starting where it is.
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  CHECK(b.armed() && fake.servo[7].torque() && !fake.servo[8].torque());
+  CHECK_NEAR(b.state().setpoint_deg, 0.0f, 1e-4);  // 512 = the zero step
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kAlreadyArmed);
+
+  // A target past the limit is clamped, and approached at the joint's speed limit.
+  CHECK(b.set_target(knee.max_deg + 50.0f, now) == Result::kOk);
+  now += 10;
+  b.tick(now, false);
+  CHECK_NEAR(b.state().setpoint_deg, knee.max_speed_dps * 0.01f, 1e-3);
+  for (int i = 0; i < 400; ++i) {
+    now += 10;
+    if (i % 10 == 0) b.set_target(knee.max_deg + 50.0f, now);  // keep talking
+    b.tick(now, false);
+  }
+  CHECK_NEAR(b.state().setpoint_deg, knee.max_deg, 1e-3);
+  CHECK(fake.servo[7].position() == static_cast<uint16_t>(deg_to_step(c, kLKnee, knee.max_deg)));
+  CHECK(b.state().read_ok && b.state().read_ms == now);
+  for (const WriteLog& w : fake.writes) CHECK(w.id == 7 || w.id == scs::kBroadcastId);
+
+  // Silence for longer than the command timeout: torque off, not hold.
+  now += c.cmd_timeout_ms + 20;
+  b.tick(now, false);
+  CHECK(!b.armed() && b.state().mode == BenchMode::kOff && fake.torque_count() == 0);
+
+  // A fault (over temperature) switches it off and latches until an explicit disarm.
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  fake.servo[7].mem[scs::reg::kPresentTemperature] = 90;
+  now += 10;
+  b.set_target(0.0f, now);
+  b.tick(now, false);
+  CHECK(b.state().mode == BenchMode::kFault && b.state().fault == Fault::kOverTemp && fake.torque_count() == 0);
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kFaultLatched);
+  CHECK(b.set_target(1.0f, now) == Result::kFaultLatched);
+  CHECK(!b.idle());
+  // Torque-off is repeated after the fault (a write may have been lost), but never while the robot owns the bus.
+  auto torque_off_broadcasts = [&]() {
+    int n = 0;
+    for (const WriteLog& w : fake.writes) n += w.id == scs::kBroadcastId && w.addr == scs::reg::kTorqueEnable && w.data[0] == 0;
+    return n;
+  };
+  int before = torque_off_broadcasts();
+  for (int i = 0; i < 20; ++i) b.tick(now += 10, false);
+  CHECK(torque_off_broadcasts() - before >= 9);
+  before = torque_off_broadcasts();
+  for (int i = 0; i < 300; ++i) b.tick(now += 10, true);
+  CHECK(torque_off_broadcasts() == before);
+  fake.servo[7].mem[scs::reg::kPresentTemperature] = 30;
+  b.disarm();
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  b.disarm();
+  CHECK(fake.torque_count() == 0 && !fake.servo[8].torque());
+  // Disarming what is already off writes nothing: it cannot disturb an armed robot.
+  for (int i = 0; i < 20; ++i) b.tick(now += 10, false);
+  const size_t writes = fake.writes.size();
+  b.disarm();
+  b.tick(now += 10, false);
+  CHECK(fake.writes.size() == writes && b.idle());
 }
 
 static void test_command_timeout_holds() {
@@ -1026,6 +1149,7 @@ int main() {
   RUN(test_gyro_in_status);
   RUN(test_status_display);
   RUN(test_bench_servo_polled_every_turn);
+  RUN(test_bench_servo);
   printf("\n%d tests, %d checks, %d failed\n", g_tests, g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

@@ -29,7 +29,7 @@ The layout follows Pollen Robotics' Microduck repositories.
 | Path | What | State |
 |---|---|---|
 | [`firmware/`](firmware/) | What runs on the Arduino UNO Q: servo bus, IMU, limits, interlocks, sit/stand, with host tests | Runs on a bare board; no servo has been driven |
-| [`runtime/`](runtime/) | The Linux-side runtime in Rust, on rigrs: talks to the firmware, runs the control loop | Read-only dry run; measured on the board |
+| [`runtime/`](runtime/) | The Linux-side runtime in Rust, on rigrs: talks to the firmware, runs the control loop | Dry-run loop (nothing here arms the robot) and a supervised one-servo bench mode; measured on the board, never with a servo |
 | [`docs/`](docs/README.md) | `robot/` (build and run one), `design/` (how it works), `project/` (roadmap, reviews, measurements) | Start at the index |
 | [`scripts/`](scripts/) | Board benchmarks and the scripts behind each design review | As run |
 | `hardware/` | Bill of materials, print files, wiring, assembly guide | Not here yet (see the licence note below) |

@@ -21,6 +21,7 @@
 #include <Arduino_LED_Matrix.h>
 #endif
 #include "imu.h"
+#include "src/duck/bench.h"
 #include "src/duck/controller.h"
 #include "src/duck/display.h"
 #include "src/duck/fmath.h"
@@ -71,6 +72,8 @@ class UartTransport : public duck::Transport {
 UartTransport g_uart;
 duck::ScsBus g_bus(g_uart);
 duck::Controller g_ctl(duck::kRobotConfig, g_bus, DUCK_ENABLE_MOTION != 0);
+// One servo on its own, for the bench; it can only ever be armed in a bench build.
+duck::BenchServo g_bench(duck::kRobotConfig, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
 duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0, {0.0f, 0.0f, 0.0f}, false, 0};
 bool g_imu_present = false;
 uint32_t g_next_tick_ms = 0;
@@ -110,6 +113,7 @@ void update_display(uint32_t now) {
   in.ms_since_command = ms_since(g_last_command_ms, now);
   in.message = g_message;
   in.ms_since_message = ms_since(g_message_ms, now);
+  in.bench = g_bench.state();
   duck::DisplayOutput out;
   duck::render_display(in, now, &out);
   if (memcmp(out.matrix, g_frame, sizeof(g_frame)) != 0) {
@@ -130,7 +134,7 @@ void update_display(uint32_t now) {
 
 // Fixed-size arrays only: on older UNO Q cores a sketch cannot link the parts
 // of the C++ library that std::vector's size checks pull in.
-typedef std::array<int32_t, 6> Info;
+typedef std::array<int32_t, 7> Info;
 typedef std::array<int32_t, 10> StatusWords;
 typedef std::array<int32_t, duck::kNumJoints> JointWords;
 typedef std::array<int32_t, duck::kNumJoints * 3> HealthWords;
@@ -139,6 +143,7 @@ typedef std::array<int32_t, 10> ReadResult;   // [bus error, count, byte, ...]
 typedef std::array<float, duck::kNumJoints> Targets;
 typedef std::array<int32_t, duck::kNumJoints> TargetWords;          // degrees x10
 typedef std::array<int32_t, 10 + duck::kNumJoints + 3> StateWords;  // see fill_state()
+typedef std::array<int32_t, 12> BenchWords;                         // see rpc_bench_step()
 
 int32_t tenths(float v) { return static_cast<int32_t>(duck::round_to_long(v * 10.0f)); }
 
@@ -146,12 +151,12 @@ int32_t tenths(float v) { return static_cast<int32_t>(duck::round_to_long(v * 10
 
 // ----------------------------------------------------------------- RPC: info
 
-// [protocol version, motion build, eeprom build, joint table ready, imu present, servo UART is Serial1]
+// [protocol version, motion build, eeprom build, joint table ready, imu present, servo UART is Serial1, bench build]
 Info rpc_info() {
   note_call();
   Info out = {{DUCK_PROTOCOL_VERSION, DUCK_ENABLE_MOTION, DUCK_ENABLE_EEPROM_WRITE,
                duck::config_ready_for_motion(duck::kRobotConfig) ? 1 : 0, g_imu_present ? 1 : 0,
-               DUCK_SERVO_SERIAL_IS_SERIAL1}};
+               DUCK_SERVO_SERIAL_IS_SERIAL1, DUCK_BENCH_MOTION}};
   return out;
 }
 
@@ -238,7 +243,7 @@ HealthWords rpc_health() {
 int32_t rpc_ping(int32_t id) {
   note_call();
   if (id < 0 || id > 253) return static_cast<int32_t>(duck::BusError::kBadArg);
-  if (g_ctl.status().mode == duck::Mode::kArmed) return static_cast<int32_t>(duck::BusError::kGated);
+  if (g_ctl.status().mode == duck::Mode::kArmed || g_bench.armed()) return static_cast<int32_t>(duck::BusError::kGated);
   return static_cast<int32_t>(g_bus.ping(static_cast<uint8_t>(id)));
 }
 
@@ -248,7 +253,7 @@ ScanResult rpc_scan(int32_t first, int32_t last) {
   note_call();
   ScanResult found;
   found.fill(0);
-  if (g_ctl.status().mode == duck::Mode::kArmed) return found;  // not while the control loop owns the bus
+  if (g_ctl.status().mode == duck::Mode::kArmed || g_bench.armed()) return found;  // not while a loop owns the bus
   if (first < 0) first = 0;
   if (last > 253) last = 253;
   if (last > first + 31) last = first + 31;
@@ -268,7 +273,7 @@ ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
     out[0] = static_cast<int32_t>(duck::BusError::kBadArg);
     return out;
   }
-  if (g_ctl.status().mode == duck::Mode::kArmed) {
+  if (g_ctl.status().mode == duck::Mode::kArmed || g_bench.armed()) {
     out[0] = static_cast<int32_t>(duck::BusError::kGated);
     return out;
   }
@@ -316,10 +321,13 @@ int32_t rpc_heartbeat() {
 
 int32_t rpc_arm(uint32_t key) {
   note_command();
+  // A bench servo has torque, or a bench fault is latched: clear it with duck_disarm first.
+  if (!g_bench.idle()) return static_cast<int32_t>(duck::Result::kBusy);
   return static_cast<int32_t>(g_ctl.arm(key, millis(), g_imu)); }
 
 int32_t rpc_disarm() {
   note_command();
+  g_bench.disarm();
   g_ctl.disarm();
   return 0;
 }
@@ -357,12 +365,58 @@ int32_t rpc_set_head(float neck_pitch, float head_pitch, float head_yaw, float h
   return static_cast<int32_t>(g_ctl.set_head(neck_pitch, head_pitch, head_yaw, head_roll, beak, millis()));
 }
 
+#if DUCK_BENCH_MOTION
+// ------------------------------------------- RPC: one servo on the bench (bench build)
+
+// Arm one joint's servo on its own (src/duck/bench.h). Refused unless the robot is disarmed.
+int32_t rpc_bench_arm(uint32_t key, int32_t joint) {
+  note_command();
+  if (g_ctl.status().mode != duck::Mode::kDisarmed) return static_cast<int32_t>(duck::Result::kBusy);
+  return static_cast<int32_t>(g_bench.arm(key, joint, millis()));
+}
+
+// One bench tick in one round trip: the target in degrees x10 out (-32768: no new target, just read), the servo's
+// state back:
+// [result, mode (0 off, 1 armed, 2 fault), fault, joint, read ok, position deg x10, speed deg/s x10,
+//  load 0.1 % (signed, in the joint's direction), voltage 0.1 V, temperature C, read time ms, setpoint deg x10].
+// Position, speed and load are as of the servo's last read, made at `read time` on the microcontroller's clock.
+BenchWords rpc_bench_step(int32_t deg10) {
+  note_command();
+  const duck::Result r = deg10 == -32768 ? duck::Result::kOk : g_bench.set_target(static_cast<float>(deg10) * 0.1f, millis());
+  const duck::BenchState s = g_bench.state();
+  BenchWords out;
+  out.fill(0);
+  out[0] = static_cast<int32_t>(r);
+  out[1] = static_cast<int32_t>(s.mode);
+  out[2] = static_cast<int32_t>(s.fault);
+  out[3] = s.joint;
+  out[4] = s.read_ok ? 1 : 0;
+  if (s.joint >= 0) {
+    const duck::JointConfig& j = duck::kRobotConfig.joints[s.joint];
+    out[5] = tenths(duck::step_to_deg(duck::kRobotConfig, s.joint, s.feedback.position));
+    out[6] = tenths(static_cast<float>(s.feedback.speed) * j.direction / duck::kRobotConfig.servo.steps_per_deg);
+    out[7] = s.feedback.load * j.direction;
+  }
+  out[8] = s.feedback.voltage_dv;
+  out[9] = s.feedback.temperature_c;
+  out[10] = static_cast<int32_t>(s.read_ms);
+  out[11] = tenths(s.setpoint_deg);
+  return out;
+}
+
+int32_t rpc_bench_disarm() {
+  note_command();
+  g_bench.disarm();
+  return 0;
+}
+#endif  // DUCK_BENCH_MOTION
+
 #if DUCK_ENABLE_EEPROM_WRITE
 // --------------------------------------- RPC: provisioning (servo EEPROM writes)
 // Only in a provisioning build, only while disarmed, only with the arm key.
 
 static bool provisioning_ok(uint32_t key) {
-  return key == duck::kArmKey && g_ctl.status().mode == duck::Mode::kDisarmed;
+  return key == duck::kArmKey && g_ctl.status().mode == duck::Mode::kDisarmed && g_bench.idle();
 }
 
 // Writes one joint's angle limits (from the joint table) into its servo and reads them back.
@@ -465,6 +519,11 @@ void setup() {
   Bridge.provide_safe("duck_set_targets", rpc_set_targets);
   Bridge.provide_safe("duck_step", rpc_step);
   Bridge.provide_safe("duck_set_head", rpc_set_head);
+#if DUCK_BENCH_MOTION
+  Bridge.provide_safe("duck_bench_arm", rpc_bench_arm);
+  Bridge.provide_safe("duck_bench_step", rpc_bench_step);
+  Bridge.provide_safe("duck_bench_disarm", rpc_bench_disarm);
+#endif
 #if DUCK_ENABLE_EEPROM_WRITE
   Bridge.provide_safe("duck_write_limits", rpc_write_limits);
   Bridge.provide_safe("duck_write_protection", rpc_write_protection);
@@ -494,6 +553,7 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_tick_ms) > 5 * DUCK_TICK_MS) g_next_tick_ms = now + DUCK_TICK_MS;
     const uint32_t t0 = micros();
     g_ctl.tick(now, g_imu);
+    g_bench.tick(now, g_ctl.status().mode == duck::Mode::kArmed);
     update_display(now);  // counted in the worst tick: the display must not cost the control loop
     const uint32_t dt = micros() - t0;
     if (dt > g_tick_us_max) g_tick_us_max = dt;

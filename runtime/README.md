@@ -75,6 +75,15 @@ recording and one from the bare board, and with an independent ROS 2 decoder (`m
 What it cannot give yet: joint velocity and torque (the firmware reports neither; a servo's "load" is a duty cycle),
 the time each servo was read (messages carry the time `duckd` received the state), and a fast reading of every
 joint (the firmware reads one servo per 10 ms tick, so with all fifteen fitted each is read at 6.7 Hz).
+
+For one servo on the bench, `duckd bench --joint NAME --supervised [--excite chirp|steps] [--amplitude 10]
+[--record FILE.mcap]` does better: with a bench build of the firmware (`DUCK_BENCH_MOTION 1`) it arms that joint
+alone, moves it around where it was (faded in and out), switches it off at the end or on Ctrl-C, and records the
+targets asked for (`/joint_targets`), the goals the firmware actually wrote after its clamp and speed limit
+(`/joint_commands`) and every read of the servo, 100 a second at the default `--hz 100`, with its own speed report
+(`/joint_states`), stamped at the moment the servo was read (the microcontroller's clock, mapped onto this machine's
+by the fastest reply). The recording file is created before anything moves. It refuses without
+`--supervised` and against any other build. Untested with a servo: none has been on the bench yet.
 Turning a recording into an SCS0009 actuator model is not something trainnr does yet:
 [Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101).
 

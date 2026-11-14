@@ -57,8 +57,9 @@ dot table in `display.cpp` if it ends up mirrored.
 |---|---|
 | Green, a short flash each second | DISARMED: no torque, reads only |
 | Blue, steady | ARMED |
+| Magenta, steady | one servo armed on the bench (bench build, `duckd bench`); the matrix says `BENCH <joint>` and that joint's dot blinks |
 | Blue, slow blink | ARMED in a supported stand (robot held off the floor) |
-| Red, steady | FAULT: torque off, latched until cleared |
+| Red, steady | FAULT: torque off, latched until cleared (the matrix says `FAULT ...`, or `BENCH FAULT ...` for a bench servo) |
 | Red, blinking 4 fast and 4 slow, everything else dark | not ours: the sketch crashed. Arduino's core does this |
 
 A fault is steady on purpose, so it cannot be taken for the core's crash pattern on the same LED.

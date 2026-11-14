@@ -33,6 +33,18 @@ are powered.
    `left_knee`), regenerate the header and flash: disarmed, the firmware reads it every 100 ms, and
    `duckd run --robot robot.json --record bench.mcap` records it for trainnr. It cannot be moved this way: arming
    needs all fifteen servos calibrated.
+8b. To measure it moving (for its actuator model), and only with the servo free to turn, a load you have chosen on
+   its horn, someone watching and the 5 V supply's switch at hand:
+   - calibrate that one joint's entry in `config/robot.json` (ID, `zero_step`, `direction`, `calibrated: true`; keep
+     the limits), regenerate the header;
+   - build with `DUCK_ENABLE_MOTION 1` and `DUCK_BENCH_MOTION 1`, push, start. LED3 must stay green until armed;
+   - `duckd bench --joint left_knee --supervised --excite steps --amplitude 5 --seconds 10 --record steps.mcap`,
+     then chirps (`--excite chirp`), then larger amplitudes. LED3 turns magenta while the servo has torque; Ctrl-C,
+     a fault or `duckd` stopping switches it off;
+   - go back to the default build (both switches 0) and confirm `duck_info` reports motion 0, bench 0.
+   The recordings carry the targets asked for, the goals the firmware wrote after its clamp and speed limit (what
+   the servo was told: fit against these), and every read of the servo (position, its own speed report), stamped
+   when it was read. trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 

@@ -7,7 +7,8 @@
 //! | Topic | Message | What |
 //! |---|---|---|
 //! | `/joint_states` | `sensor_msgs/msg/JointState` | measured joint angles, radians, all fifteen joints; NaN where the servo did not answer |
-//! | `/joint_commands` | `sensor_msgs/msg/JointState` | the targets sent to the firmware that tick (only with `--exchange step`) |
+//! | `/joint_commands` | `sensor_msgs/msg/JointState` | the targets sent to the firmware that tick (only with `--exchange step`); from `duckd bench`, the goal the firmware wrote after its clamp and speed limit |
+//! | `/joint_targets` | `sensor_msgs/msg/JointState` | `duckd bench` only: the target asked for, before the firmware's clamp and speed limit |
 //! | `/imu` | `sensor_msgs/msg/Imu` | trunk orientation from the firmware's pitch and roll (yaw unknown), body angular velocity |
 //!
 //! Velocity and effort are left empty: the firmware reports neither (the servo's "load" is a duty cycle, not a
@@ -135,15 +136,15 @@ impl Cdr {
     }
 }
 
-fn joint_state(t_ns: u64, positions: &[f64]) -> Vec<u8> {
+fn joint_state(t_ns: u64, names: &[&str], positions: &[f64], velocities: &[f64]) -> Vec<u8> {
     let mut c = Cdr::new();
     c.header(t_ns, "");
-    c.len(JOINT_NAMES.len());
-    for name in JOINT_NAMES {
+    c.len(names.len());
+    for name in names {
         c.string(name);
     }
     c.f64_seq(positions);
-    c.f64_seq(&[]);
+    c.f64_seq(velocities);
     c.f64_seq(&[]);
     c.0
 }
@@ -183,6 +184,33 @@ fn imu(t_ns: u64, pitch_roll: Option<(f64, f64)>, angular_velocity: Option<[f64;
     c.0
 }
 
+/// One tick of a bench run: the target sent and the servo's state that came back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BenchSample {
+    /// When the target was sent and the reply received, nanoseconds after the Unix epoch.
+    pub sent_ns: u64,
+    pub received_ns: u64,
+    /// The target asked for, radians.
+    pub target: f64,
+    /// The goal the firmware wrote last (after its clamp and speed limit), radians, from the same reply.
+    pub setpoint: f64,
+    /// The servo's last read in that reply, if it answered.
+    pub read: Option<BenchRead>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BenchRead {
+    /// The microcontroller's millisecond clock when it read the servo.
+    pub read_ms: u32,
+    pub position: f64,
+    pub velocity: f64,
+}
+
+/// Nanoseconds after the Unix epoch, now.
+pub fn now_ns() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
 /// Anything an MCAP can be written to.
 pub trait Sink: Write + Seek {}
 impl<T: Write + Seek> Sink for T {}
@@ -192,6 +220,7 @@ pub struct Recorder {
     writer: mcap::Writer<Box<dyn Sink>>,
     joint_states: u16,
     joint_commands: u16,
+    joint_targets: u16,
     imu: u16,
     sequence: u32,
     /// Ticks recorded so far.
@@ -215,8 +244,9 @@ impl Recorder {
         let none = BTreeMap::new();
         let joint_states = writer.add_channel(joint, "/joint_states", "cdr", &none)?;
         let joint_commands = writer.add_channel(joint, "/joint_commands", "cdr", &none)?;
+        let joint_targets = writer.add_channel(joint, "/joint_targets", "cdr", &none)?;
         let imu = writer.add_channel(imu_id, "/imu", "cdr", &none)?;
-        Ok(Recorder { writer, joint_states, joint_commands, imu, sequence: 0, ticks: 0 })
+        Ok(Recorder { writer, joint_states, joint_commands, joint_targets, imu, sequence: 0, ticks: 0 })
     }
 
     fn write(&mut self, channel_id: u16, t_ns: u64, data: &[u8]) -> Result<(), RecordError> {
@@ -227,22 +257,49 @@ impl Recorder {
 
     /// Record one tick: what was measured and, if targets went out with it, what was sent (radians, firmware order).
     pub fn tick(&mut self, sensed: &Sensed, sent: Option<&[f64]>) -> Result<(), RecordError> {
-        let t_ns = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        self.tick_at(t_ns, sensed, sent)
+        self.tick_at(now_ns(), sensed, sent)
     }
 
     /// As [`Recorder::tick`], stamped `t_ns` nanoseconds after the Unix epoch.
     pub fn tick_at(&mut self, t_ns: u64, sensed: &Sensed, sent: Option<&[f64]>) -> Result<(), RecordError> {
         let positions: Vec<f64> = sensed.joints.iter().map(|j| j.unwrap_or(f64::NAN)).collect();
-        self.write(self.joint_states, t_ns, &joint_state(t_ns, &positions))?;
+        self.write(self.joint_states, t_ns, &joint_state(t_ns, &JOINT_NAMES, &positions, &[]))?;
         if let Some(sent) = sent {
-            self.write(self.joint_commands, t_ns, &joint_state(t_ns, sent))?;
+            self.write(self.joint_commands, t_ns, &joint_state(t_ns, &JOINT_NAMES, sent, &[]))?;
         }
         if sensed.pitch_roll.is_some() || sensed.angular_velocity.is_some() {
             self.write(self.imu, t_ns, &imu(t_ns, sensed.pitch_roll, sensed.angular_velocity))?;
         }
         self.ticks += 1;
         Ok(())
+    }
+
+    /// Record a bench run of one joint (`duckd bench`): each target asked for as `/joint_targets` at the time it was
+    /// sent; for each distinct read of the servo, `/joint_states` (position and the servo's own speed) and
+    /// `/joint_commands` (the goal the firmware wrote in that same tick, after its clamp and speed limit: what the
+    /// servo was actually told) at the time the microcontroller made it. Its clock is mapped onto this machine's by the reply that came back fastest, so the
+    /// link's delay and jitter stay out of the measured timing. Returns the number of distinct reads.
+    pub fn bench(&mut self, joint: &str, samples: &[BenchSample]) -> Result<usize, RecordError> {
+        // Every read was made before its reply arrived: the smallest gap is the best estimate of the clock offset.
+        let offset = samples
+            .iter()
+            .filter_map(|s| s.read.map(|r| i128::from(s.received_ns) - i128::from(r.read_ms) * 1_000_000))
+            .min()
+            .unwrap_or(0);
+        let mut last_read: Option<u32> = None;
+        let mut reads = 0;
+        for s in samples {
+            self.write(self.joint_targets, s.sent_ns, &joint_state(s.sent_ns, &[joint], &[s.target], &[]))?;
+            if let Some(r) = s.read.filter(|r| Some(r.read_ms) != last_read) {
+                let t = u64::try_from(i128::from(r.read_ms) * 1_000_000 + offset).unwrap_or(0);
+                self.write(self.joint_states, t, &joint_state(t, &[joint], &[r.position], &[r.velocity]))?;
+                self.write(self.joint_commands, t, &joint_state(t, &[joint], &[s.setpoint], &[]))?;
+                last_read = Some(r.read_ms);
+                reads += 1;
+            }
+        }
+        self.ticks += u32::try_from(samples.len()).unwrap_or(u32::MAX);
+        Ok(reads)
     }
 
     /// Write the summary and close the file. A recording that is not finished cannot be read.

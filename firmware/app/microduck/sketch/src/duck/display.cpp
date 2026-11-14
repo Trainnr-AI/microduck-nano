@@ -107,6 +107,8 @@ void draw_text(DisplayOutput* out, const char* text, uint32_t offset) {
 }
 
 uint8_t mode_colour(const DisplayInput& in, uint32_t now_ms) {
+  if (in.bench.mode == BenchMode::kFault) return kRgbRed;
+  if (in.bench.mode == BenchMode::kArmed) return kRgbMagenta;
   switch (in.status.mode) {
     case Mode::kFault:
       // Steady: a crashed sketch is the core blinking this same red LED, and must not look like a fault.
@@ -156,6 +158,23 @@ int display_text(const DisplayInput& in, char* buf) {
   Text t = {buf, 0};
   buf[0] = '\0';
   const Status& s = in.status;
+  const BenchState& b = in.bench;
+  const bool bench_joint = b.joint >= 0 && b.joint < kNumJoints;
+  if (b.mode == BenchMode::kFault) {
+    t.put("BENCH FAULT ");
+    const int f = static_cast<int>(b.fault);
+    t.put(f > 0 && f < static_cast<int>(sizeof(kFaultNames) / sizeof(kFaultNames[0])) ? kFaultNames[f] : "?");
+    if (bench_joint) {
+      t.put(" ");
+      t.put(kJointNames[b.joint]);
+    }
+    return t.n;
+  }
+  if (b.mode == BenchMode::kArmed) {  // a servo has torque: say so before anything else
+    t.put("BENCH ");
+    t.put(bench_joint ? kJointNames[b.joint] : "?");
+    return t.n;
+  }
   if (s.mode == Mode::kFault) {
     t.put("FAULT ");
     const int f = static_cast<int>(s.fault);
@@ -204,7 +223,8 @@ void render_display(const DisplayInput& in, uint32_t now_ms, DisplayOutput* out)
   // Text. A message scrolls from its own start; the ticker and a fault scroll with the clock.
   char text[kTextMax];
   display_text(in, text);
-  const bool is_message = in.status.mode != Mode::kFault && message_up(in);
+  const bool is_message =
+      in.status.mode != Mode::kFault && in.bench.mode == BenchMode::kOff && message_up(in);
   draw_text(out, text, (is_message ? in.ms_since_message : now_ms) / kScrollMs);
 
   // Servos.
@@ -212,6 +232,7 @@ void render_display(const DisplayInput& in, uint32_t now_ms, DisplayOutput* out)
   for (int j = 0; j < kNumJoints; ++j) {
     uint8_t level = in.joint_answering[j] ? kLedFull : kLedDim;
     if (in.status.mode == Mode::kFault && in.status.fault_joint == j) level = fault_blink ? kLedFull : 0;
+    if (in.bench.mode != BenchMode::kOff && in.bench.joint == j) level = fault_blink ? kLedFull : 0;
     set(out, kJointDot[j][0], kJointDot[j][1], level);
   }
 
