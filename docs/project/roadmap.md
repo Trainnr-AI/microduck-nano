@@ -33,7 +33,8 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
    firmware's state message (protocol 3, running on the board with no IMU attached); it still needs a command source and above all a
    trained policy. The microcontroller firmware stays C++ until the robot walks.
 4. **Tolerance coupon, one leg, then a full print.**
-5. **Train walking** in trainnr on the fitted actuator model, with backlash modelled; evaluate with pushes and delays;
+5. **Train walking** in trainnr on the fitted actuator model (waits on a trainnr walk family for any robot:
+   [Trainnr-AI/trainnr#100](https://github.com/Trainnr-AI/trainnr/issues/100)), with backlash modelled; evaluate with pushes and delays;
    pass the deployment gate. Then sit/stand, then get-up, which may need stronger servos.
 6. **Publish the hardware files** once permission for the XGO-Duck-derived shells is confirmed
    (`LICENSE-MODELS.md`).
