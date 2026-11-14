@@ -8,4 +8,5 @@
 pub mod bridge;
 pub mod control;
 pub mod firmware;
+pub mod policy;
 pub mod robot;

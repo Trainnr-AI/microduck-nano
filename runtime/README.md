@@ -4,9 +4,9 @@ The Linux side of the robot's software, in Rust, built on [rigrs](https://github
 the Arduino UNO Q next to the microcontroller firmware in [`firmware/`](../firmware/), which owns the servo bus,
 the limits and the faults.
 
-> **Status: dry run.** `duckd` talks to the firmware, describes the robot to rigrs and runs the fixed-rate loop a
-> walking policy will live in. Its targets are "stay where you are", and the firmware ignores targets unless it was
-> built with motion enabled and armed. There is no policy yet.
+> **Status: dry run.** `duckd` talks to the firmware, describes the robot to rigrs, and runs the fixed-rate loop
+> with or without a policy. The firmware ignores targets unless it was built with motion enabled and armed. No
+> trained policy exists yet; the policy runner has only run a hand-made test network and a random one.
 
 ## What is here
 
@@ -15,19 +15,44 @@ the limits and the faults.
 | `src/bridge.rs` | Client for the board's router: MessagePack-RPC over a Unix socket |
 | `src/firmware.rs` | Typed calls to the firmware: info, status, joint angles, and the one-call-per-tick `state` and `step` |
 | `src/robot.rs` | Reads `firmware/config/robot.json` and builds rigrs joint specifications, as four chains (rigrs carries at most six joints per chain today) |
-| `src/control.rs` | The fixed-rate loop: read state, pass a target through each chain's rigrs `Guard`, account for time |
+| `src/policy.rs` | The policy runner: a manifest that says what the network's inputs and outputs mean, checks against the robot and the model, observation assembly, inference (pure-Rust `tract`), action clipping and scaling |
+| `src/control.rs` | The fixed-rate loop: read state, get targets (hold in place, or from a policy), pass them through each chain's rigrs `Guard`, account for time |
 | `src/main.rs` | `duckd`, the command-line tool |
-| `tests/runtime.rs` | Host tests against a fake router; no board needed |
+| `tests/runtime.rs` | Host tests against a fake router and a tiny hand-made policy (`tests/data/`); no board needed |
 
 ## Build and test
 
 ```sh
 cargo test                       # on a PC
-
-# for the board: a static 64-bit Arm binary, no C toolchain needed
-rustup target add aarch64-unknown-linux-musl
-cargo build --release --target aarch64-unknown-linux-musl
 ```
+
+For the board, a static 64-bit Arm binary. The inference library has assembly parts, so the cross-build needs a
+C compiler for Arm; `cargo-zigbuild` supplies one without installing a toolchain:
+
+```sh
+rustup target add aarch64-unknown-linux-musl
+uv tool install cargo-zigbuild          # or: pip install cargo-zigbuild
+# if it reports "Failed to find zig", point it at the zig binary inside its own install:
+#   export CARGO_ZIGBUILD_ZIG_PATH=$(find ~/.local/share/uv/tools/cargo-zigbuild -name zig -type f)
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+```
+
+The binary is about 18 MB, nearly all of it the inference library.
+
+## Policies
+
+A policy is an ONNX file with a JSON manifest of the same name beside it
+([example](tests/data/tiny_policy.json)). The manifest names the joints the outputs drive, the default pose an
+all-zero action means, the action scale and clip, the control rate, and the observation as an ordered list of
+terms: `angular_velocity`, `projected_gravity`, `joint_positions`, `joint_velocities`, `last_action`, `command`.
+
+`duckd` refuses a policy whose joints are not the robot's, whose default pose is outside the joint limits, or whose
+observation or action size differs from the model's. On a tick where something the policy needs was not measured
+(a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
+
+Two gaps before a real policy can run: the firmware does not report the gyro yet, so a manifest with
+`angular_velocity` is skipped on every tick; and the sign conventions of `projected_gravity` are unchecked against
+both a real IMU and the training simulation.
 
 ## Run on the board
 
@@ -39,6 +64,7 @@ adb push target/aarch64-unknown-linux-musl/release/duckd /home/arduino/duck/
 adb push ../firmware/config/robot.json /home/arduino/duck/
 adb shell '/home/arduino/duck/duckd status'
 adb shell 'cd /home/arduino/duck && ./duckd run --robot robot.json --hz 50 --seconds 10'
+adb shell 'cd /home/arduino/duck && ./duckd policy-time --robot robot.json --policy policy_nano.onnx'
 ```
 
 ## What it measured (2026-11-15, bare board, default 115200 baud link)
@@ -85,11 +111,19 @@ The higher speeds most likely fail because the microcontroller receives one byte
 Luwu's XGO-Duck runtime reaches 2 Mbps on this board by switching on the UART's hardware buffer. Not tried here.
 Whether 460800 stays clean once the servo bus is busy at 1 Mbaud on the same microcontroller is also untested.
 
-With no servos attached every chain reports "unmeasured", so the loop never had targets to send: its `step` mode
-fell back to reading, and the `duck_step` figures come from `duckd time`, not from the loop.
+### Policy inference
+
+`duckd policy-time` on the board, a random network of the size mjlab trains by default (61 observations, layers of
+512, 256 and 128, 14 actions; `scripts/uno-q-bench/make_models.py` writes it): **0.48 ms median, 0.58 ms 95th,
+1.04 ms max** over 3,000 runs, on one core. With the 6.4 ms exchange that is about 7 ms of a 20 ms tick.
+
+With no servos attached every chain reports "unmeasured": the loop never had targets to send (its `step` mode fell
+back to reading; the `duck_step` figures come from `duckd time`), and a policy given to `duckd run` was skipped on
+all 500 ticks for want of joint angles. The policy path through the loop is covered by the host tests only.
 
 ## Next
 
-1. The hardware receive buffer on the microcontroller's UART, if more than 460800 baud is ever needed.
-2. A policy runner: observation assembly, ONNX inference, action scaling, a manifest check.
-3. Sending targets, behind the firmware's arm step.
+1. The gyro in the firmware's state message, so a policy with `angular_velocity` can run.
+2. A command source (gamepad or network) instead of the zero command.
+3. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
+4. The hardware receive buffer on the microcontroller's UART, if more than 460800 baud is ever needed.

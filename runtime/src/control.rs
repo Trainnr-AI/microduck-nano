@@ -14,6 +14,7 @@ use arm::{Guard, Verdict};
 
 use crate::bridge::{Bridge, BridgeError};
 use crate::firmware;
+use crate::policy::{Policy, Sensed};
 use crate::robot::Robot;
 
 /// Commands older than this are stale and the guard holds (rigrs `Guard`).
@@ -103,26 +104,39 @@ pub struct LoopStats {
     /// Round-trip times of the calls made in each tick, in microseconds, sorted.
     pub round_trip_us: Vec<u64>,
     pub last_error: Option<String>,
+    /// Ticks on which the policy produced targets, and ticks on which it could not (an input was missing).
+    pub policy_ran: u32,
+    pub policy_skipped: u32,
+    pub last_policy_skip: Option<String>,
+    /// Inference times in microseconds, sorted.
+    pub inference_us: Vec<u64>,
 }
 
 impl LoopStats {
     pub fn percentile(&self, p: f64) -> Option<u64> {
-        if self.round_trip_us.is_empty() {
-            return None;
-        }
-        let last = self.round_trip_us.len() - 1;
-        let index = ((last as f64) * p).round() as usize;
-        self.round_trip_us.get(index.min(last)).copied()
+        percentile(&self.round_trip_us, p)
+    }
+
+    pub fn inference_percentile(&self, p: f64) -> Option<u64> {
+        percentile(&self.inference_us, p)
     }
 }
 
-/// Run the dry-run loop for `duration` at `period`.
+fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
+    let last = sorted.len().checked_sub(1)?;
+    let index = ((last as f64) * p).round() as usize;
+    sorted.get(index.min(last)).copied()
+}
+
+/// Run the loop for `duration` at `period`. Without a policy the target is "stay where you are"; with one, the
+/// policy's targets (for `command`) go through the guards. Either way nothing moves unless the firmware is armed.
 pub fn run<S: Read + Write>(
     bridge: &mut Bridge<S>,
     robot: &Robot,
     period: Duration,
     duration: Duration,
     exchange: Exchange,
+    mut policy: Option<(&mut Policy, &[f64])>,
 ) -> LoopStats {
     let mut guards = Guards::new(robot, period);
     let mut stats = LoopStats::default();
@@ -134,12 +148,29 @@ pub fn run<S: Read + Write>(
         let tick_start = Instant::now();
         let now_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         match read_state(bridge, exchange, allowed.as_deref()) {
-            Ok(measured) => {
-                // The dry-run command: hold every joint where it is. A policy will supply this later.
-                let wanted: Vec<f64> = measured.iter().map(|m| m.unwrap_or(0.0)).collect();
+            Ok(sensed) => {
+                let measured = &sensed.joints;
+                // Without a policy (or when it cannot run this tick) the command is: hold every joint where it is.
+                let hold = || measured.iter().map(|m| m.unwrap_or(0.0)).collect::<Vec<f64>>();
+                let wanted = match policy.as_mut() {
+                    None => hold(),
+                    Some((policy, command)) => match policy.act(&sensed, command, period.as_secs_f64()) {
+                        Ok(targets) => {
+                            stats.policy_ran += 1;
+                            stats.inference_us.push(policy.last_inference_us);
+                            targets
+                        }
+                        Err(why) => {
+                            stats.policy_skipped += 1;
+                            stats.last_policy_skip = Some(why.to_string());
+                            policy.reset();
+                            hold()
+                        }
+                    },
+                };
                 guards.fed(now_ms);
                 let mut next_targets = Vec::with_capacity(wanted.len());
-                for (_, outcome) in guards.authorise(now_ms, &measured, &wanted) {
+                for (_, outcome) in guards.authorise(now_ms, measured, &wanted) {
                     match outcome {
                         ChainOutcome::Unmeasured => stats.unmeasured_chain_ticks += 1,
                         ChainOutcome::Guarded(Verdict::Move { radians }) => {
@@ -169,22 +200,32 @@ pub fn run<S: Read + Write>(
         }
     }
     stats.round_trip_us.sort_unstable();
+    stats.inference_us.sort_unstable();
     stats
 }
 
-/// One tick's exchange with the firmware; returns the measured joint angles.
+/// One tick's exchange with the firmware; returns what was measured.
 fn read_state<S: Read + Write>(
     bridge: &mut Bridge<S>,
     exchange: Exchange,
     allowed: Option<&[f64]>,
-) -> Result<Vec<Option<f64>>, BridgeError> {
-    match (exchange, allowed) {
-        (Exchange::TwoReads, _) => {
-            firmware::status(bridge)?;
-            firmware::joints(bridge)
+) -> Result<Sensed, BridgeError> {
+    let (status, joints) = match (exchange, allowed) {
+        (Exchange::TwoReads, _) => (firmware::status(bridge)?, firmware::joints(bridge)?),
+        (Exchange::Step, Some(targets)) => {
+            let state = firmware::step(bridge, targets)?;
+            (state.status, state.joints)
         }
-        (Exchange::Step, Some(targets)) => Ok(firmware::step(bridge, targets)?.joints),
         // Nothing authorised yet (or a plain read was asked for): read only.
-        (Exchange::State, _) | (Exchange::Step, None) => Ok(firmware::state(bridge)?.joints),
-    }
+        (Exchange::State, _) | (Exchange::Step, None) => {
+            let state = firmware::state(bridge)?;
+            (state.status, state.joints)
+        }
+    };
+    Ok(Sensed {
+        joints,
+        pitch_roll: status.imu_ok.then(|| (status.pitch_deg.to_radians(), status.roll_deg.to_radians())),
+        // The firmware does not report the gyro yet.
+        angular_velocity: None,
+    })
 }

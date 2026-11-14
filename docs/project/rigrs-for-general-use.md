@@ -98,7 +98,8 @@ the policy every 20 ms. **Change:** add a `std` runtime skeleton: a fixed-rate l
 `Plan` is ready for policies but nothing loads or runs one. **Change:** add a `policy` crate: observation assembly
 from robot state and commands, input normalisation, action scaling and default pose, a manifest that pins the
 observation layout and joint order, and an ONNX backend behind a feature. It should refuse a policy whose manifest
-does not match the robot, and take trainnr's exported deployment as its input.
+does not match the robot, and take trainnr's exported deployment as its input. The Nano's runtime now has a first
+version of this (`runtime/src/policy.rs`, using the pure-Rust `tract` for inference) that could move into rigrs.
 
 ### 9. One IMU driver and no IMU trait
 

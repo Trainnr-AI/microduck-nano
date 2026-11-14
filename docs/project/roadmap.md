@@ -9,6 +9,8 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 - **Runtime in Rust on rigrs** ([`runtime/`](../../runtime/)). Reads the firmware's state through the board's router
   and runs a dry-run control loop with rigrs guards. Measured on the board: a tick's exchange with the microcontroller took 18 ms
   as two reads at the default link speed and takes about 6 ms as one exchange at 460800 baud.
+- **Policy runner** in the runtime: manifest-checked ONNX policies, tested with a hand-made network. No trained
+  policy exists.
 - **Simulation model.** The design's MuJoCo model (`scene_scs0009_v2.xml`) is onboarded in trainnr as
   `microduck-nano-v2`. It stands, crouches, and sits and stands in simulation.
 - **Measurements of the board.** [uno-q-compute.md](uno-q-compute.md).
@@ -26,8 +28,9 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 2. **One servo on the bench.** Confirm steps per degree, the protection registers and the adapter at 5 V; record
    telemetry and fit an actuator model for the SCS0009 (trainnr `identify_system`). Nothing trained before this is
    trustworthy.
-3. **A policy runner in the Rust runtime**, on [rigrs](rigrs-for-general-use.md). The link is ready for it: one
-   exchange per tick, about 6 ms at 460800 baud (it was 18 ms as two reads at the default speed). The microcontroller firmware stays C++ until the robot walks.
+3. **Feed the policy runner.** The Rust runtime can load a policy, check it against the robot and run it in the
+   loop (0.48 ms per inference on the board; about 7 ms per tick with the exchange). It still needs the gyro in the
+   firmware's state message, a command source, and above all a trained policy. The microcontroller firmware stays C++ until the robot walks.
 4. **Tolerance coupon, one leg, then a full print.**
 5. **Train walking** in trainnr on the fitted actuator model, with backlash modelled; evaluate with pushes and delays;
    pass the deployment gate. Then sit/stand, then get-up, which may need stronger servos.

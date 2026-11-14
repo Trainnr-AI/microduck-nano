@@ -7,6 +7,7 @@ use std::time::Duration;
 use duck_runtime::bridge::{Bridge, ROUTER_SOCKET};
 use duck_runtime::control;
 use duck_runtime::firmware;
+use duck_runtime::policy::{Manifest, Policy, Sensed};
 use duck_runtime::robot::Robot;
 
 const USAGE: &str = "\
@@ -17,13 +18,19 @@ usage:
       Ask the firmware what it is and what state it is in.
   duckd time [--count 200] [--socket PATH]
       Time single read-only calls to the microcontroller, by reply size, to see what the link costs.
-  duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--socket PATH]
+  duckd policy-time --robot robot.json --policy policy.onnx [--count 2000]
+      Load a policy (its manifest is the .json beside it), check it against the robot, and time inference alone
+      on made-up observations. Needs no firmware.
+  duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy policy.onnx]
+            [--socket PATH]
       Dry-run the control loop: read state every tick, pass a hold-in-place target through the rigrs guards,
       and report round-trip time to the microcontroller and missed deadlines.
         state      one read per tick (default; sends nothing)
         step       one exchange per tick: the guarded hold-in-place targets go out, the state comes back.
                    The firmware ignores targets unless it is armed.
         two-reads  status and joints as two calls (firmware protocol 1)
+      With --policy the targets come from the policy (zero command) instead of hold-in-place; the loop runs at the
+      policy's rate. A tick on which an input the policy needs was not measured holds instead.
 ";
 
 struct Args {
@@ -34,11 +41,12 @@ struct Args {
     seconds: f64,
     count: u32,
     exchange: control::Exchange,
+    policy: Option<String>,
 }
 
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
-    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State };
+    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None };
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -54,6 +62,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     _ => return Err("--exchange must be state, step or two-reads".into()),
                 }
             }
+            "--policy" => args.policy = Some(value()?),
             "--count" => args.count = value()?.parse().map_err(|_| "--count needs a whole number")?,
             other => return Err(format!("unknown option {other}")),
         }
@@ -84,7 +93,38 @@ fn main() -> ExitCode {
     }
 }
 
+fn load_policy(args: &Args, robot: &Robot) -> Result<Option<Policy>, Box<dyn std::error::Error>> {
+    let Some(path) = args.policy.as_deref() else { return Ok(None) };
+    let manifest = Manifest::load(std::path::Path::new(path).with_extension("json"))?;
+    Ok(Some(Policy::load(path, manifest, robot)?))
+}
+
 fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    if args.command == "policy-time" {
+        let path = args.robot.as_deref().ok_or("policy-time needs --robot")?;
+        let robot = Robot::load(path)?;
+        let mut policy = load_policy(args, &robot)?.ok_or("policy-time needs --policy")?;
+        let m = policy.manifest();
+        println!("policy `{}`: {} observations -> 14 actions, trained at {} Hz", m.name, m.observation_size(), m.control_hz);
+        let command = vec![0.0; m.command_size()];
+        let period = 1.0 / m.control_hz;
+        let mut times = Vec::with_capacity(args.count as usize);
+        for i in 0..args.count {
+            // made-up but changing inputs: every joint swinging a little, the trunk tilting a little
+            let phase = f64::from(i) * 0.1;
+            let sensed = Sensed {
+                joints: (0..15).map(|j| Some(0.05 * (phase + f64::from(j)).sin())).collect(),
+                pitch_roll: Some((0.02 * phase.sin(), 0.02 * phase.cos())),
+                angular_velocity: Some([0.1 * phase.sin(), 0.1 * phase.cos(), 0.0]),
+            };
+            policy.act(&sensed, &command, period)?;
+            times.push(policy.last_inference_us);
+        }
+        times.sort_unstable();
+        let at = |p: f64| times.get((times.len().saturating_sub(1) as f64 * p) as usize).copied().unwrap_or(0) as f64 / 1000.0;
+        println!("inference: median {:.3} ms   95th {:.3} ms   max {:.3} ms   ({} runs)", at(0.5), at(0.95), at(1.0), times.len());
+        return Ok(());
+    }
     let mut bridge = Bridge::connect(&args.socket, Duration::from_millis(500))?;
     match args.command.as_str() {
         "status" => {
@@ -131,16 +171,29 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         "run" => {
             let path = args.robot.as_deref().ok_or("run needs --robot <path to firmware/config/robot.json>")?;
             let robot = Robot::load(path)?;
-            let period = Duration::from_secs_f64(1.0 / args.hz);
+            let mut policy = load_policy(args, &robot)?;
+            let hz = policy.as_ref().map_or(args.hz, |p| p.manifest().control_hz);
+            let command = vec![0.0; policy.as_ref().map_or(0, |p| p.manifest().command_size())];
+            let period = Duration::from_secs_f64(1.0 / hz);
             println!(
                 "robot: {} joints in {} chains, {} with a servo ID; loop {} Hz for {} s (dry run)",
                 robot.joints(),
                 robot.chains.len(),
                 robot.ids_assigned,
-                args.hz,
+                hz,
                 args.seconds
             );
-            let stats = control::run(&mut bridge, &robot, period, Duration::from_secs_f64(args.seconds), args.exchange);
+            if let Some(p) = &policy {
+                println!("policy `{}`, zero command", p.manifest().name);
+            }
+            let stats = control::run(
+                &mut bridge,
+                &robot,
+                period,
+                Duration::from_secs_f64(args.seconds),
+                args.exchange,
+                policy.as_mut().map(|p| (p, command.as_slice())),
+            );
             let ms = |us: Option<u64>| us.map_or("-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
             println!("ticks {}   errors {}   missed deadlines {}", stats.ticks, stats.errors, stats.missed_deadlines);
             println!(
@@ -155,6 +208,18 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 "guard verdicts: move {}   hold {}   chain unmeasured {}",
                 stats.moves, stats.holds, stats.unmeasured_chain_ticks
             );
+            if policy.is_some() {
+                println!(
+                    "policy: ran {} ticks, skipped {}   inference median {} ms   max {} ms",
+                    stats.policy_ran,
+                    stats.policy_skipped,
+                    ms(stats.inference_percentile(0.5)),
+                    ms(stats.inference_percentile(1.0))
+                );
+                if let Some(why) = &stats.last_policy_skip {
+                    println!("last skip: {why}");
+                }
+            }
             if let Some(why) = stats.last_error {
                 println!("last error: {why}");
             }

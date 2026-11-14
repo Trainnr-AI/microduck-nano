@@ -18,7 +18,7 @@ Modelled on Pollen Robotics' Microduck repositories.
 | `docs/robot/` | For someone with a robot: build, flash, bench checklist |
 | `docs/design/` | How things work |
 | `docs/project/` | Dated records: roadmap, reviews, measurements, prior art |
-| `runtime/` | The Linux-side runtime, in Rust, built on rigrs (`Trainnr-AI/rigrs`); read-only at this stage. Gaps found in rigrs are fixed upstream by pull request, like trainnr; see `docs/project/rigrs-for-general-use.md` |
+| `runtime/` | The Linux-side runtime, in Rust, built on rigrs (`Trainnr-AI/rigrs`): firmware client, control loop, policy runner. Gaps found in rigrs are fixed upstream by pull request, like trainnr; see `docs/project/rigrs-for-general-use.md` |
 | `hardware/`, `robot/`, `training/` | Not here yet |
 
 Before saying a firmware change is done: `python3 firmware/tools/gen_config.py --check` and `make -C firmware/tests test`.

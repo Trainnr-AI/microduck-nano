@@ -8,6 +8,7 @@ Writes:
   policy_small.onnx   MLP 64 -> 256 -> 128 -> 64 -> 14    (a small walking policy)
   policy_large.onnx   MLP 64 -> 512 -> 256 -> 128 -> 14   (the size mjlab trains by default)
   policy_hist.onnx    MLP 640 -> 1024 -> 512 -> 256 -> 14 (10 steps of history)
+  policy_nano.onnx    MLP 61 -> 512 -> 256 -> 128 -> 14   (the Nano's observation size; for `duckd policy-time`)
   yolo11n_<size>.onnx       Ultralytics YOLO11n detector, float32, at 160 / 224 / 320 / 640 px
   yolo11n_<size>_int8.onnx  the same, statically quantized to 8 bit (calibrated on RANDOM images:
                             good for timing only, the detections are meaningless)
@@ -68,6 +69,9 @@ def main():
     mlp(out / "policy_small.onnx", [64, 256, 128, 64, 14])
     mlp(out / "policy_large.onnx", [64, 512, 256, 128, 14])
     mlp(out / "policy_hist.onnx", [640, 1024, 512, 256, 14])
+    # The Nano's own shape: 61 observations (as Microduck's policies), the size mjlab trains by default.
+    # runtime/tests/data/tiny_policy.json describes the observation layout; copy it beside this file to run it.
+    mlp(out / "policy_nano.onnx", [61, 512, 256, 128, 14])
     from ultralytics import YOLO
     work = out / "_work"
     work.mkdir(exist_ok=True)

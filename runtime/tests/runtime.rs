@@ -10,6 +10,7 @@ use arm::Verdict;
 use duck_runtime::bridge::{Bridge, BridgeError};
 use duck_runtime::control::{self, ChainOutcome, Exchange, Guards};
 use duck_runtime::firmware;
+use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Sensed};
 use duck_runtime::robot::{Robot, JOINT_NAMES};
 use rmpv::Value;
 
@@ -56,8 +57,9 @@ fn bare_board(method: &str) -> Option<Value> {
 fn standing_robot(method: &str) -> Option<Value> {
     match method {
         "duck_joints" => Some(ints(&[5; 15])),
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 0, 0, 0, 2][..], &[5; 15][..]].concat())),
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 0, 0, 0, 2][..], &[5; 15][..]].concat())),
+        // IMU ok, level
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
+        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
         other => bare_board(other),
     }
 }
@@ -159,7 +161,7 @@ fn the_guard_holds_when_commands_go_stale_and_when_a_servo_is_silent() {
 fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
     let mut bridge = fake_router(standing_robot);
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads);
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None);
     assert!(stats.ticks >= 25 && stats.ticks <= 32, "about 30 ticks in 300 ms at 100 Hz, got {}", stats.ticks);
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.unmeasured_chain_ticks, 0);
@@ -167,7 +169,7 @@ fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     assert!(stats.percentile(0.5).is_some());
 
     let mut bare = fake_router(bare_board);
-    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State);
+    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State, None);
     assert_eq!(stats.moves, 0, "with no servo answering nothing is authorised");
     assert_eq!(stats.unmeasured_chain_ticks, stats.ticks * 4);
 }
@@ -191,7 +193,142 @@ fn one_exchange_per_tick_reads_state_and_reports_what_the_firmware_did_with_targ
     assert!(firmware::step(&mut bridge, &[0.0; 14]).is_err());
 
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step);
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None);
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.moves, stats.ticks * 4);
+}
+
+// ---------------------------------------------------------------- policy
+
+const TINY_ONNX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tiny_policy.onnx");
+const TINY_JSON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tiny_policy.json");
+
+/// The tiny policy's manifest, optionally edited as text first.
+fn manifest(edit: fn(String) -> String) -> Manifest {
+    let text = edit(std::fs::read_to_string(TINY_JSON).expect("manifest"));
+    serde_json::from_str(&text).expect("manifest json")
+}
+
+/// The same network, described without a gyro: its three slots become part of the command.
+fn no_gyro(text: String) -> String {
+    text.replace(r#"{"term": "angular_velocity"},"#, "").replace(r#""size": 13"#, r#""size": 16"#)
+}
+
+fn level(joints: [f64; 15]) -> Sensed {
+    Sensed { joints: joints.iter().map(|&j| Some(j)).collect(), pitch_roll: Some((0.0, 0.0)), angular_velocity: Some([0.0; 3]) }
+}
+
+#[test]
+fn gravity_points_down_when_upright_and_forward_when_nose_up() {
+    let g = projected_gravity(0.0, 0.0);
+    assert!(g[0].abs() < 1e-12 && g[1].abs() < 1e-12 && (g[2] + 1.0).abs() < 1e-12);
+    let g = projected_gravity(std::f64::consts::FRAC_PI_2, 0.0);
+    assert!((g[0] - 1.0).abs() < 1e-12 && g[2].abs() < 1e-12);
+    let g = projected_gravity(0.2, -0.3);
+    assert!((g.iter().map(|x| x * x).sum::<f64>() - 1.0).abs() < 1e-12, "always a unit vector");
+}
+
+#[test]
+fn a_policy_that_does_not_fit_the_robot_or_the_model_is_refused() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    assert!(Policy::load(TINY_ONNX, manifest(|t| t), &robot).is_ok());
+    // joints in another order
+    let swapped = manifest(|t| t.replacen("left_hip_yaw", "X", 1).replacen("left_hip_roll", "left_hip_yaw", 1).replacen("X", "left_hip_roll", 1));
+    assert!(matches!(Policy::load(TINY_ONNX, swapped, &robot), Err(PolicyError::Mismatch(_))));
+    // an observation layout the network was not built for (60 values, the model takes 61)
+    let short = manifest(|t| t.replace(r#""size": 13"#, r#""size": 12"#));
+    assert!(matches!(Policy::load(TINY_ONNX, short, &robot), Err(PolicyError::Mismatch(_))));
+    // a default pose the robot cannot hold: left hip yaw at -30 degrees, its limit is -6.3
+    let outside = manifest(|t| t.replace("[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]", "[-30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]"));
+    assert!(matches!(Policy::load(TINY_ONNX, outside, &robot), Err(PolicyError::Mismatch(_))));
+    // a model file that is not there
+    assert!(matches!(Policy::load("/nonexistent.onnx", manifest(|t| t), &robot), Err(PolicyError::Load(_))));
+}
+
+#[test]
+fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
+    // The tiny network: action = 0.5 * ELU(joint position relative to the default pose) + 0.1, per joint.
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let mut policy = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
+    let mut joints = [0.0; 15];
+    joints[0] = 0.2;
+    joints[1] = -0.3;
+    joints[14] = 0.4; // the beak: not the policy's to move
+    let targets = policy.act(&level(joints), &[0.0; 13], 0.02).expect("act");
+    assert_eq!(targets.len(), 15);
+    let scale = 10f64.to_radians();
+    let expect = |action: f64| action * scale;
+    assert!((targets[0] - expect(0.5 * 0.2 + 0.1)).abs() < 1e-6);
+    assert!((targets[1] - expect(0.5 * ((-0.3f64).exp() - 1.0) + 0.1)).abs() < 1e-6);
+    assert!((targets[2] - expect(0.1)).abs() < 1e-6);
+    assert!((targets[14] - 0.4).abs() < 1e-12, "the beak keeps its measured angle");
+
+    // the second tick sees joint speeds and the previous action
+    joints[0] = 0.21;
+    let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
+    assert_eq!(obs.len(), 61);
+    assert!((f64::from(obs[14]) - 0.5).abs() < 1e-4, "speed of joint 0: 0.01 rad in 0.02 s");
+    assert!((f64::from(obs[28]) - 0.2).abs() < 1e-6, "last action of joint 0");
+    assert!((f64::from(obs[44]) + 1.0).abs() < 1e-6, "gravity z when level");
+
+    // after a reset there is no previous tick to difference against
+    policy.reset();
+    let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
+    assert_eq!(obs[14], 0.0);
+    assert_eq!(obs[28], 0.0);
+}
+
+#[test]
+fn the_action_is_clipped_before_it_is_scaled() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let mut policy = Policy::load(TINY_ONNX, manifest(|t| t.replace(r#""action_clip": 1.0"#, r#""action_clip": 0.15"#)), &robot).expect("policy");
+    let mut joints = [0.0; 15];
+    joints[0] = 0.2; // raw action 0.2
+    let targets = policy.act(&level(joints), &[0.0; 13], 0.02).expect("act");
+    assert!((targets[0] - 0.15 * 10f64.to_radians()).abs() < 1e-9);
+}
+
+#[test]
+fn a_missing_measurement_stops_the_policy_instead_of_becoming_a_zero() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let mut policy = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
+    let command = [0.0; 13];
+    let mut silent = level([0.0; 15]);
+    silent.joints[3] = None;
+    assert!(matches!(policy.act(&silent, &command, 0.02), Err(PolicyError::Missing(_))));
+    let mut no_imu = level([0.0; 15]);
+    no_imu.pitch_roll = None;
+    assert!(matches!(policy.act(&no_imu, &command, 0.02), Err(PolicyError::Missing(_))));
+    let mut no_gyro_reading = level([0.0; 15]);
+    no_gyro_reading.angular_velocity = None;
+    assert!(matches!(policy.act(&no_gyro_reading, &command, 0.02), Err(PolicyError::Missing("angular velocity"))));
+    // and a command of the wrong length is refused
+    assert!(matches!(policy.act(&level([0.0; 15]), &[0.0; 5], 0.02), Err(PolicyError::Mismatch(_))));
+}
+
+#[test]
+fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let period = Duration::from_millis(20);
+
+    // A policy that needs no gyro runs on every tick, and its targets pass the guards.
+    let mut policy = Policy::load(TINY_ONNX, manifest(no_gyro), &robot).expect("policy");
+    let mut bridge = fake_router(standing_robot);
+    let command = [0.0; 16];
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)));
+    assert_eq!(stats.errors, 0);
+    assert_eq!(stats.policy_ran, stats.ticks);
+    assert_eq!(stats.policy_skipped, 0);
+    assert_eq!(stats.moves, stats.ticks * 4);
+    assert!(stats.inference_percentile(0.5).is_some());
+
+    // The firmware does not report a gyro yet, so a policy that needs one is skipped and the loop holds.
+    let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
+    let mut bridge = fake_router(standing_robot);
+    let command = [0.0; 13];
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)));
+    assert_eq!(stats.policy_ran, 0);
+    assert_eq!(stats.policy_skipped, stats.ticks);
+    assert!(stats.last_policy_skip.as_deref().unwrap_or("").contains("angular velocity"));
+    assert_eq!(stats.moves, stats.ticks * 4, "holding in place is still authorised");
 }
