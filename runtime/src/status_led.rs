@@ -6,7 +6,9 @@
 //! is in the `gpiod` group). On any other machine, or if the files cannot be written, the light is simply absent:
 //! a status light never stops the loop.
 //!
-//! Arduino App Lab also writes these LEDs when an app starts or stops; the last writer wins.
+//! While `duckd` holds the light, each colour's kernel trigger is set to `none` so nothing else blinks it; when it
+//! lets go (dropped, or a write failed) the light is switched off and the triggers it found are put back. Arduino App
+//! Lab also writes this LED when an app starts or stops; the last writer wins.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,63 +47,97 @@ impl Colour {
     }
 }
 
+/// One colour of the LED: its directory and the trigger it had before `duckd` took it.
+struct Channel {
+    dir: PathBuf,
+    trigger: Option<String>,
+}
+
+impl Channel {
+    fn set(&self, on: bool) -> bool {
+        fs::write(self.dir.join("brightness"), if on { "1" } else { "0" }).is_ok()
+    }
+}
+
+/// The active trigger in a `trigger` file's text: the word in brackets (`none [heartbeat] timer`).
+fn active_trigger(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|w| w.strip_prefix('[')?.strip_suffix(']').map(str::to_string))
+}
+
 /// The light, or nothing if this machine has none.
 pub struct StatusLed {
-    brightness: Option<[PathBuf; 3]>,
+    channels: Option<[Channel; 3]>,
     shown: Option<Colour>,
 }
 
 impl StatusLed {
-    /// The board's LED1, if it is there.
+    /// The board's LED1, if it is there and can be written.
     pub fn find() -> Self {
         Self::find_in(Path::new(LEDS))
     }
 
-    /// LED1 under `leds` (a copy of `/sys/class/leds` in tests).
+    /// LED1 under `leds` (a copy of `/sys/class/leds` in tests). It is taken (triggers off) and switched off; if any
+    /// of that cannot be written, it is given back and the light is absent.
     pub fn find_in(leds: &Path) -> Self {
-        let brightness = NAMES
-            .iter()
-            .map(|names| names.map(|name| leds.join(name).join("brightness")))
-            .find(|paths| paths.iter().all(|p| p.exists()));
-        if let Some(paths) = &brightness {
-            // Nothing else should be blinking it (a trigger would fight our writes).
-            for path in paths {
-                if let Some(dir) = path.parent() {
-                    let _ = fs::write(dir.join("trigger"), "none");
-                }
-            }
+        let found = NAMES.iter().map(|names| names.map(|name| leds.join(name))).find(|dirs| dirs.iter().all(|d| d.join("brightness").exists()));
+        let Some(dirs) = found else { return Self::none() };
+        let channels = dirs.map(|dir| {
+            let trigger = fs::read_to_string(dir.join("trigger")).ok().as_deref().and_then(active_trigger);
+            Channel { dir, trigger }
+        });
+        let mut led = StatusLed { channels: Some(channels), shown: None };
+        let taken = led.channels.as_ref().is_some_and(|channels| {
+            channels.iter().all(|c| c.trigger.is_none() || fs::write(c.dir.join("trigger"), "none").is_ok())
+                && channels.iter().all(|c| c.set(false))
+        });
+        if taken {
+            led.shown = Some(Colour::Off);
+        } else {
+            led.release();
         }
-        StatusLed { brightness, shown: None }
+        led
     }
 
     /// No light at all (tests, `duckd` off the board).
     pub fn none() -> Self {
-        StatusLed { brightness: None, shown: None }
+        StatusLed { channels: None, shown: None }
     }
 
     pub fn present(&self) -> bool {
-        self.brightness.is_some()
+        self.channels.is_some()
     }
 
-    /// Show `colour`. Writes only when it changes, so calling it every tick costs nothing. If a write fails, the
-    /// light is given up on rather than retried every tick.
+    /// Show `colour`. Writes only when it changes, so calling it every tick costs nothing. If a write fails, the light
+    /// is switched off as far as it can be and given back, rather than left half lit or retried every tick.
     pub fn show(&mut self, colour: Colour) {
         if self.shown == Some(colour) {
             return;
         }
-        let Some(paths) = &self.brightness else { return };
-        let ok = paths.iter().zip(colour.rgb()).all(|(path, on)| fs::write(path, if on { "1" } else { "0" }).is_ok());
-        if ok {
+        let Some(channels) = &self.channels else { return };
+        if channels.iter().zip(colour.rgb()).all(|(c, on)| c.set(on)) {
             self.shown = Some(colour);
         } else {
-            self.brightness = None;
+            self.release();
         }
+    }
+
+    /// Off, the triggers put back, and no more writes.
+    fn release(&mut self) {
+        if let Some(channels) = self.channels.take() {
+            for c in &channels {
+                let _ = c.set(false);
+                if let Some(trigger) = &c.trigger {
+                    let _ = fs::write(c.dir.join("trigger"), trigger);
+                }
+            }
+        }
+        self.shown = None;
     }
 }
 
 impl Drop for StatusLed {
-    /// `duckd` is not running any more: the light goes out.
+    /// `duckd` is not running a loop any more: the light goes out and is given back.
     fn drop(&mut self) {
-        self.show(Colour::Off);
+        self.release();
     }
 }

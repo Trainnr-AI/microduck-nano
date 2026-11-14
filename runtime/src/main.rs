@@ -17,8 +17,8 @@ duckd: Microduck Nano runtime (a dry run at this stage; the firmware it talks to
 usage:
   duckd status [--socket PATH]
       Ask the firmware what it is and what state it is in.
-  duckd say TEXT [--socket PATH]
-      Put TEXT on the board's LED matrix for a few seconds (up to 32 characters).
+  duckd say TEXT... [--socket PATH]
+      Put TEXT on the board's LED matrix for a few seconds (up to 32 characters; the words are joined).
   duckd time [--count 200] [--socket PATH]
       Time single read-only calls to the microcontroller, by reply size, to see what the link costs.
   duckd policy-time --robot robot.json --policy policy.onnx [--count 2000]
@@ -54,9 +54,6 @@ struct Args {
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
     let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, text: None };
-    if args.command == "say" {
-        args.text = Some(argv.next().ok_or("say needs the text")?);
-    }
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -74,6 +71,13 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--policy" => args.policy = Some(value()?),
             "--count" => args.count = value()?.parse().map_err(|_| "--count needs a whole number")?,
+            word if args.command == "say" && !word.starts_with("--") => {
+                let text = args.text.get_or_insert_with(String::new);
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(word);
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -153,7 +157,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         "say" => {
-            let text = args.text.as_deref().unwrap_or_default();
+            let text = args.text.as_deref().ok_or("say needs the text")?;
             let kept = firmware::say(&mut bridge, text)?;
             println!("on the matrix: {kept} characters");
             Ok(())
@@ -211,6 +215,12 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(p) = &policy {
                 println!("policy `{}`, zero command", p.manifest().name);
             }
+            // Ctrl-C or SIGTERM: finish the tick, report, and put the light out. A second one exits at once.
+            ctrlc::set_handler(|| {
+                if control::STOP.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    std::process::exit(130);
+                }
+            })?;
             let mut led = StatusLed::find();
             println!("status light (LED1): {}", if led.present() { "yes" } else { "not found" });
             // Announce on the matrix; an older firmware without duck_say just does not show it.

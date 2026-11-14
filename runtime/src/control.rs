@@ -8,6 +8,7 @@
 //! deadline, which decides the control rate a policy can have.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use arm::{Guard, Verdict};
@@ -17,6 +18,9 @@ use crate::firmware;
 use crate::policy::{Policy, Sensed};
 use crate::robot::Robot;
 use crate::status_led::{Colour, StatusLed};
+
+/// Set to end a running loop early (Ctrl-C in `duckd`); the loop finishes its tick and returns its statistics.
+pub static STOP: AtomicBool = AtomicBool::new(false);
 
 /// Commands older than this are stale and the guard holds (rigrs `Guard`).
 const SOURCE_TIMEOUT_MS: u64 = 500;
@@ -149,7 +153,7 @@ pub fn run<S: Read + Write>(
     let mut next = start;
     // What the guards allowed on the previous tick, to send with this one. None until every chain has moved once.
     let mut allowed: Option<Vec<f64>> = None;
-    while start.elapsed() < duration {
+    while start.elapsed() < duration && !STOP.load(Ordering::Relaxed) {
         let tick_start = Instant::now();
         let now_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         match read_state(bridge, exchange, allowed.as_deref()) {

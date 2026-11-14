@@ -383,13 +383,13 @@ fn fake_leds(name: &str) -> std::path::PathBuf {
         let led = dir.join(format!("unoq:user-{colour}1"));
         std::fs::create_dir_all(&led).expect("led dir");
         std::fs::write(led.join("brightness"), "0").expect("brightness");
-        std::fs::write(led.join("trigger"), "[none] heartbeat").expect("trigger");
+        std::fs::write(led.join("trigger"), "none [heartbeat] timer").expect("trigger");
     }
     dir
 }
 
 fn lit(dir: &std::path::Path) -> [bool; 3] {
-    ["red", "green", "blue"].map(|c| std::fs::read_to_string(dir.join(format!("unoq:user-{c}1/brightness"))).expect("read").trim() == "1")
+    ["red", "green", "blue"].map(|c| std::fs::read_to_string(dir.join(format!("unoq:user-{c}1/brightness"))).is_ok_and(|v| v.trim() == "1"))
 }
 
 #[test]
@@ -417,8 +417,30 @@ fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
         assert_eq!(lit(&leds), [true, true, true]);
     }
     assert_eq!(lit(&leds), [false, false, false], "dropped: off");
-    assert_eq!(std::fs::read_to_string(leds.join("unoq:user-red1/trigger")).expect("trigger"), "none");
+    let trigger = |c: &str| std::fs::read_to_string(leds.join(format!("unoq:user-{c}1/trigger"))).expect("trigger");
+    assert_eq!(trigger("red"), "heartbeat", "the trigger it found is given back");
+
+    // While held, nothing else may drive it; a write that fails part-way leaves it off and given back.
+    std::fs::write(leds.join("unoq:user-green1/trigger"), "none [timer]").expect("trigger");
+    let mut led = StatusLed::find_in(&leds);
+    assert_eq!(trigger("green"), "none");
+    led.show(Colour::White);
+    std::fs::remove_dir_all(leds.join("unoq:user-blue1")).expect("remove blue");
+    led.show(Colour::Red);
+    assert!(!led.present());
+    assert_eq!(lit(&leds)[..2], [false, false]);
+    assert_eq!(trigger("green"), "timer");
+    drop(led);
+
+    // One it cannot write is not claimed at all.
+    let readonly = fake_leds("readonly");
+    let brightness = readonly.join("unoq:user-red1/brightness");
+    let mut perms = std::fs::metadata(&brightness).expect("meta").permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&brightness, perms).expect("chmod");
+    assert!(!StatusLed::find_in(&readonly).present());
     let _ = std::fs::remove_dir_all(&leds);
+    let _ = std::fs::remove_dir_all(&readonly);
     // a machine without the LED: nothing happens, nothing fails
     let mut absent = StatusLed::find_in(std::path::Path::new("/nonexistent"));
     assert!(!absent.present());

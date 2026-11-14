@@ -22,8 +22,14 @@
 static BNO08x g_imu;
 static bool g_started = false;
 
-// Gravity and the calibrated gyro (bias removed by the sensor), both at the control rate.
-static bool enable_reports() { return g_imu.enableGravity(DUCK_TICK_MS) && g_imu.enableGyro(DUCK_TICK_MS); }
+// Gravity and the calibrated gyro (bias removed by the sensor), both at the control rate. Gravity decides whether the
+// IMU counts as present: the firmware's own safety needs only it. A gyro that will not start just never reports, and
+// the state message says "not measured".
+static bool enable_reports() {
+  const bool gravity = g_imu.enableGravity(DUCK_TICK_MS);
+  g_imu.enableGyro(DUCK_TICK_MS);
+  return gravity;
+}
 
 bool imu_begin() {
   Wire1.begin();  // the Qwiic connector is Wire1 on the UNO Q (3.3 V)

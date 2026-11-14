@@ -117,11 +117,9 @@ fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
         roll_deg: field(v, 8)? as f64 / 10.0,
         worst_tick_us: field(v, 9)?,
     };
-    let gyro = v.get(10 + joints..).unwrap_or_default();
-    let angular_velocity = match gyro {
-        &[x, y, z] if !gyro.contains(&MISSING) => Some([x, y, z].map(|w| (w as f64 / 10.0).to_radians())),
-        _ => None,
-    };
+    // The length was checked above: three gyro words follow the joints.
+    let gyro = [field(v, 10 + joints)?, field(v, 11 + joints)?, field(v, 12 + joints)?];
+    let angular_velocity = (!gyro.contains(&MISSING)).then(|| gyro.map(|w| (w as f64 / 10.0).to_radians()));
     let joints =
         v.iter().skip(10).take(joints).map(|&t| (t != MISSING).then(|| (t as f64 / 10.0).to_radians())).collect();
     Ok(State { result: name(&RESULTS, field(v, 0)?), status, joints, angular_velocity })

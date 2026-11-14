@@ -282,16 +282,16 @@ ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
   return out;
 }
 
-// Text for the LED matrix: up to 32 characters, letters, digits and + - / . : ? ! % ( ) = # _ '. It stays up for
-// 3 s after it was last sent (two passes if it scrolls), then the status ticker returns; send it again to keep it.
-// A fault always shows instead. An empty string clears it. Returns how many characters were kept.
+// Text for the LED matrix: up to 32 characters. The display draws letters, digits and + - / . : ? ! % ( ) = # _ ',
+// lower case as upper case, anything else as '?'. It stays up for 3 s after it was last sent (two passes if it
+// scrolls), then the status ticker returns; send it again to keep it. A fault always shows instead. An empty string
+// clears it. Returns how many characters were kept.
 int32_t rpc_say(String text) {
   note_call();
   int n = 0;
-  for (unsigned i = 0; i < text.length() && n < duck::kMessageMax; ++i) {
-    char c = text[i];
-    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    if (c >= 32 && c <= 95) g_message[n++] = c;
+  while (n < duck::kMessageMax && n < static_cast<int>(text.length()) && text[n] != '\0') {
+    g_message[n] = text[n];
+    ++n;
   }
   g_message[n] = '\0';
   g_message_ms = n ? millis() : duck::kNever;

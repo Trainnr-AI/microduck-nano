@@ -67,12 +67,13 @@ class Duck:
 
     @staticmethod
     def _state(v):
+        gyro = v[10 + len(JOINTS):]  # empty from a protocol 2 firmware
         return {
             "result": _name(RESULTS, v[0]), "mode": _name(MODES, v[1]), "posture": _name(POSTURES, v[2]),
             "fault": _name(FAULTS, v[3]), "imu_ok": bool(v[6]), "pitch_deg": v[7] / 10, "roll_deg": v[8] / 10,
             "joints": {n: (None if x == -32768 else x / 10) for n, x in zip(JOINTS, v[10:10 + len(JOINTS)])},
             # body frame (x forward, y left, z up), deg/s; None when the gyro is not measured
-            "gyro_dps": None if -32768 in v[10 + len(JOINTS):] else [x / 10 for x in v[10 + len(JOINTS):]],
+            "gyro_dps": (None if len(gyro) != 3 or -32768 in gyro else [x / 10 for x in gyro]),
         }
 
     def setpoints(self):

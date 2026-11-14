@@ -38,8 +38,9 @@ row7  G W . . h h h h h . .  .  A     h  neck pitch, head pitch, head yaw, head 
 
 **Servo dots.** Bright: the servo answers. Dim: it does not. Blinking: it caused the fault.
 
-**K, the link with Linux.** Bright: commands arrived in the last 0.5 s (`duckd run`, heartbeats). Half: only reads
-in the last 1.5 s (the app's watcher reads once a second). A short flash each second: Linux was talking and went
+**K, the link with Linux.** Bright: commands arrived in the last 0.5 s (`duckd run --exchange step`, heartbeats,
+arm, sit, stand ...). Half: only reads in the last 1.5 s (`duckd run` with its default `--exchange state`, the app's
+watcher, which reads once a second). A short flash each second: Linux was talking and went
 silent. Off: nothing since power-up.
 
 **G, W: gravity and gyro.** Bright: fresh and calibrated. Dim: the IMU answered at boot but this reading is stale or
@@ -66,8 +67,8 @@ A fault is steady on purpose, so it cannot be taken for the core's crash pattern
 
 | Colour | Meaning |
 |---|---|
-| Blue | commands in the last 0.5 s |
-| Green | reads in the last 1.5 s |
+| Blue | commands in the last 0.5 s (`duckd run --exchange step`, heartbeats, arm, sit, stand ...) |
+| Green | only reads in the last 1.5 s (`duckd run` with its default `--exchange state`, the app's watcher) |
 | Red, a short flash each second | Linux was talking and went silent |
 | Off | nothing since power-up |
 
@@ -79,11 +80,13 @@ A fault is steady on purpose, so it cannot be taken for the core's crash pattern
 | Blue | the policy produced this tick's targets |
 | Yellow | the policy could not run this tick: an input it needs was not measured; holding in place |
 | Red | the exchange with the firmware failed |
-| Off | `duckd` is not running a loop |
+| Off | `duckd` is not running a loop. Ctrl-C or SIGTERM ends the loop cleanly and puts the light out; a kill -9
+does not, and leaves the last colour until the next `duckd run` |
 
 `duckd` writes `/sys/class/leds/unoq:user-{red,green,blue}1` (or `{red,green,blue}:user` on images that name them
-that way); the `arduino` user may, through the `gpiod` group. Arduino App Lab also writes this LED when an app
-starts or stops.
+that way); the `arduino` user may, through the `gpiod` group. While it runs it sets each colour's kernel trigger to
+`none`, and puts back the trigger it found when it stops. If the LED cannot be written, `duckd` says "not found" and
+runs without it. Arduino App Lab also writes this LED when an app starts or stops.
 
 ## Cost
 
