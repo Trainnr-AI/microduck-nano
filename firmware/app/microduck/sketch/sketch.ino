@@ -1,0 +1,394 @@
+// SPDX-License-Identifier: Apache-2.0
+// Microduck Nano - microcontroller (STM32) side.
+//
+// Owns everything time-critical and everything safety-related: the servo bus,
+// the IMU, joint limits, interlocks, the balance law, fault handling. The
+// Linux side only sends requests over the Bridge; every one of them goes
+// through the same safety layer, and none of them can move a servo unless the
+// firmware was built with DUCK_ENABLE_MOTION and then armed.
+//
+// Wiring assumed (firmware/README.md): servo adapter on D0 (RX) / D1 (TX),
+// 3.3 V logic, 1 Mbaud; BNO086 on the Qwiic connector.
+
+#include <Arduino.h>
+#include <Arduino_RouterBridge.h>
+
+#include <array>
+
+#include "duck_build_config.h"
+#include "imu.h"
+#include "src/duck/controller.h"
+#include "src/duck/fmath.h"
+#include "src/duck/robot_config_data.h"
+
+// The UART on D0/D1. On UNO Q core 0.55 and later `Serial` is the Bridge
+// monitor and D0/D1 is `Serial1`; on older cores (0.52 ships on some boards)
+// D0/D1 is `Serial` and `Serial1` is the Bridge's own link, which must not be
+// touched. The core tells us which.
+#if defined(ARDUINO_HARDWARE_SERIAL)
+#define DUCK_SERVO_SERIAL ARDUINO_HARDWARE_SERIAL
+#define DUCK_SERVO_SERIAL_IS_SERIAL1 1
+#else
+#define DUCK_SERVO_SERIAL Serial
+#define DUCK_SERVO_SERIAL_IS_SERIAL1 0
+#endif
+
+#define DUCK_PROTOCOL_VERSION 2
+
+namespace {
+
+class UartTransport : public duck::Transport {
+ public:
+  void write(const uint8_t* data, size_t n) override {
+    DUCK_SERVO_SERIAL.write(data, n);
+    DUCK_SERVO_SERIAL.flush();
+  }
+  size_t read(uint8_t* data, size_t n, uint32_t timeout_ms) override {
+    size_t got = 0;
+    uint32_t t0 = millis();
+    while (got < n) {
+      const int c = DUCK_SERVO_SERIAL.read();
+      if (c >= 0) {
+        data[got++] = static_cast<uint8_t>(c);
+        t0 = millis();
+      } else if (millis() - t0 > timeout_ms) {
+        break;
+      }
+    }
+    return got;
+  }
+  void discard_input() override {
+    while (DUCK_SERVO_SERIAL.read() >= 0) {
+    }
+  }
+};
+
+UartTransport g_uart;
+duck::ScsBus g_bus(g_uart);
+duck::Controller g_ctl(duck::kRobotConfig, g_bus, DUCK_ENABLE_MOTION != 0);
+duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0};
+bool g_imu_present = false;
+uint32_t g_next_tick_ms = 0;
+uint32_t g_tick_us_max = 0;
+
+// Fixed-size arrays only: on older UNO Q cores a sketch cannot link the parts
+// of the C++ library that std::vector's size checks pull in.
+typedef std::array<int32_t, 6> Info;
+typedef std::array<int32_t, 10> StatusWords;
+typedef std::array<int32_t, duck::kNumJoints> JointWords;
+typedef std::array<int32_t, duck::kNumJoints * 3> HealthWords;
+typedef std::array<int32_t, 33> ScanResult;   // [count, id, id, ...]
+typedef std::array<int32_t, 10> ReadResult;   // [bus error, count, byte, ...]
+typedef std::array<float, duck::kNumJoints> Targets;
+typedef std::array<int32_t, duck::kNumJoints> TargetWords;          // degrees x10
+typedef std::array<int32_t, 10 + duck::kNumJoints> StateWords;      // see fill_state()
+
+int32_t tenths(float v) { return static_cast<int32_t>(duck::round_to_long(v * 10.0f)); }
+
+}  // namespace
+
+// ----------------------------------------------------------------- RPC: info
+
+// [protocol version, motion build, eeprom build, joint table ready, imu present, servo UART is Serial1]
+Info rpc_info() {
+  Info out = {{DUCK_PROTOCOL_VERSION, DUCK_ENABLE_MOTION, DUCK_ENABLE_EEPROM_WRITE,
+               duck::config_ready_for_motion(duck::kRobotConfig) ? 1 : 0, g_imu_present ? 1 : 0,
+               DUCK_SERVO_SERIAL_IS_SERIAL1}};
+  return out;
+}
+
+// [mode, posture, fault, fault joint, flags, imu ok, pitch x10, roll x10, balance x10, worst tick in us]
+StatusWords rpc_status() {
+  const duck::Status s = g_ctl.status();
+  StatusWords out = {{static_cast<int32_t>(s.mode), static_cast<int32_t>(s.posture),
+                      static_cast<int32_t>(s.fault), s.fault_joint, s.flags, s.imu_ok ? 1 : 0,
+                      tenths(s.pitch_deg), tenths(s.roll_deg), tenths(s.balance_deg),
+                      static_cast<int32_t>(g_tick_us_max)}};
+  g_tick_us_max = 0;
+  return out;
+}
+
+// Measured joint angles, degrees x10; -32768 where the servo did not answer.
+JointWords rpc_joints() {
+  JointWords out;
+  for (int j = 0; j < duck::kNumJoints; ++j) {
+    out[j] = g_ctl.feedback_valid(j) ? tenths(g_ctl.measured_deg()[j]) : -32768;
+  }
+  return out;
+}
+
+// The whole state a control loop needs, in one reply, so a tick costs one round trip on the link instead of several:
+// [result, mode, posture, fault, fault joint, flags, imu ok, pitch x10, roll x10, worst tick in us,
+//  then one measured joint angle per joint, degrees x10, -32768 where the servo did not answer].
+// `result` is the duck::Result of the command this reply answers (0 for a plain read).
+static StateWords fill_state(int32_t result) {
+  const duck::Status s = g_ctl.status();
+  StateWords out;
+  out[0] = result;
+  out[1] = static_cast<int32_t>(s.mode);
+  out[2] = static_cast<int32_t>(s.posture);
+  out[3] = static_cast<int32_t>(s.fault);
+  out[4] = s.fault_joint;
+  out[5] = s.flags;
+  out[6] = s.imu_ok ? 1 : 0;
+  out[7] = tenths(s.pitch_deg);
+  out[8] = tenths(s.roll_deg);
+  out[9] = static_cast<int32_t>(g_tick_us_max);
+  g_tick_us_max = 0;
+  for (int j = 0; j < duck::kNumJoints; ++j) {
+    out[10 + j] = g_ctl.feedback_valid(j) ? tenths(g_ctl.measured_deg()[j]) : -32768;
+  }
+  return out;
+}
+
+StateWords rpc_state() { return fill_state(0); }
+
+// Commanded joint angles after the safety layer, degrees x10.
+JointWords rpc_setpoints() {
+  JointWords out;
+  for (int j = 0; j < duck::kNumJoints; ++j) out[j] = tenths(g_ctl.setpoint_deg()[j]);
+  return out;
+}
+
+// Per joint: load (0.1 %, signed), voltage (0.1 V), temperature (deg C); 45 numbers.
+HealthWords rpc_health() {
+  HealthWords out;
+  for (int j = 0; j < duck::kNumJoints; ++j) {
+    const duck::Feedback& fb = g_ctl.feedback(j);
+    const bool ok = g_ctl.feedback_valid(j);
+    out[j * 3] = ok ? fb.load : -32768;
+    out[j * 3 + 1] = ok ? fb.voltage_dv : -1;
+    out[j * 3 + 2] = ok ? fb.temperature_c : -1;
+  }
+  return out;
+}
+
+// ------------------------------------------------- RPC: bench reads (no motion)
+
+// 0 = the servo answered; otherwise a BusError code (1 = no reply).
+int32_t rpc_ping(int32_t id) {
+  if (id < 0 || id > 253) return static_cast<int32_t>(duck::BusError::kBadArg);
+  if (g_ctl.status().mode == duck::Mode::kArmed) return static_cast<int32_t>(duck::BusError::kGated);
+  return static_cast<int32_t>(g_bus.ping(static_cast<uint8_t>(id)));
+}
+
+// [count, id, id, ...]: IDs that answer a ping in first..last (at most 32 per
+// call: a silent ID costs a timeout).
+ScanResult rpc_scan(int32_t first, int32_t last) {
+  ScanResult found;
+  found.fill(0);
+  if (g_ctl.status().mode == duck::Mode::kArmed) return found;  // not while the control loop owns the bus
+  if (first < 0) first = 0;
+  if (last > 253) last = 253;
+  if (last > first + 31) last = first + 31;
+  for (int32_t id = first; id <= last; ++id) {
+    if (g_bus.ping(static_cast<uint8_t>(id)) == duck::BusError::kOk) found[1 + found[0]++] = id;
+  }
+  return found;
+}
+
+// [bus error, count, byte, byte, ...] - raw register read, up to 8 bytes.
+ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
+  ReadResult out;
+  out.fill(0);
+  uint8_t data[8];
+  if (id < 0 || id > 253 || addr < 0 || addr > 79 || n < 1 || n > 8) {
+    out[0] = static_cast<int32_t>(duck::BusError::kBadArg);
+    return out;
+  }
+  if (g_ctl.status().mode == duck::Mode::kArmed) {
+    out[0] = static_cast<int32_t>(duck::BusError::kGated);
+    return out;
+  }
+  const duck::BusError e = g_bus.read(static_cast<uint8_t>(id), static_cast<uint8_t>(addr), data,
+                                      static_cast<uint8_t>(n));
+  out[0] = static_cast<int32_t>(e);
+  if (e == duck::BusError::kOk) {
+    out[1] = n;
+    for (int i = 0; i < n; ++i) out[2 + i] = data[i];
+  }
+  return out;
+}
+
+// For adapters that echo transmitted bytes (bench checklist).
+bool rpc_set_echo(bool on) {
+  g_bus.set_tx_echo(on);
+  return on;
+}
+
+// ------------------------------------------------------------- RPC: commands
+// All return a duck::Result code (0 = ok).
+
+int32_t rpc_heartbeat() {
+  g_ctl.heartbeat(millis());
+  return static_cast<int32_t>(g_ctl.status().mode);
+}
+
+int32_t rpc_arm(uint32_t key) { return static_cast<int32_t>(g_ctl.arm(key, millis(), g_imu)); }
+
+int32_t rpc_disarm() {
+  g_ctl.disarm();
+  return 0;
+}
+
+int32_t rpc_clear_fault() { return static_cast<int32_t>(g_ctl.clear_fault()); }
+
+int32_t rpc_stand(bool supported) { return static_cast<int32_t>(g_ctl.stand(supported, millis())); }
+
+int32_t rpc_sit() { return static_cast<int32_t>(g_ctl.sit(millis(), g_imu)); }
+
+// 15 joint targets in degrees, joint order as in config/robot.json.
+int32_t rpc_set_targets(Targets deg) {
+  return static_cast<int32_t>(g_ctl.set_targets(deg.data(), millis()));
+}
+
+// One control tick in one round trip: 15 joint targets in degrees x10 (integers are a third of the size of floats
+// on the wire), answered with the state. The targets take exactly the path duck_set_targets takes: through the
+// safety layer, and ignored unless the firmware is armed.
+StateWords rpc_step(TargetWords deg10) {
+  float deg[duck::kNumJoints];
+  for (int j = 0; j < duck::kNumJoints; ++j) deg[j] = static_cast<float>(deg10[j]) * 0.1f;
+  return fill_state(static_cast<int32_t>(g_ctl.set_targets(deg, millis())));
+}
+
+int32_t rpc_set_head(float neck_pitch, float head_pitch, float head_yaw, float head_roll, float beak) {
+  return static_cast<int32_t>(g_ctl.set_head(neck_pitch, head_pitch, head_yaw, head_roll, beak, millis()));
+}
+
+#if DUCK_ENABLE_EEPROM_WRITE
+// --------------------------------------- RPC: provisioning (servo EEPROM writes)
+// Only in a provisioning build, only while disarmed, only with the arm key.
+
+static bool provisioning_ok(uint32_t key) {
+  return key == duck::kArmKey && g_ctl.status().mode == duck::Mode::kDisarmed;
+}
+
+// Writes one joint's angle limits (from the joint table) into its servo and reads them back.
+// [result, min step read back, max step read back]
+std::array<int32_t, 3> rpc_write_limits(uint32_t key, int32_t joint) {
+  std::array<int32_t, 3> out = {{255, -1, -1}};
+  if (!provisioning_ok(key) || joint < 0 || joint >= duck::kNumJoints) return out;
+  const duck::RobotConfig& c = duck::kRobotConfig;
+  if (!duck::config_ready_for_motion(c)) return out;
+  const int16_t a = duck::deg_to_step(c, joint, c.joints[joint].min_deg);
+  const int16_t b = duck::deg_to_step(c, joint, c.joints[joint].max_deg);
+  const uint16_t lo = static_cast<uint16_t>(a < b ? a : b), hi = static_cast<uint16_t>(a < b ? b : a);
+  g_bus.allow_eeprom(true);
+  const duck::BusError e = g_bus.write_angle_limits(c.joints[joint].servo_id, lo, hi);
+  g_bus.allow_eeprom(false);
+  uint16_t rlo = 0, rhi = 0;
+  out[0] = static_cast<int32_t>(e);
+  if (g_bus.read_angle_limits(c.joints[joint].servo_id, &rlo, &rhi) == duck::BusError::kOk) {
+    out[1] = rlo;
+    out[2] = rhi;
+  }
+  return out;
+}
+
+// Writes the protection settings from config/robot.json into one servo and reads them back.
+// [result, max temperature, unload condition, holding torque, protection time, overload torque]
+std::array<int32_t, 6> rpc_write_protection(uint32_t key, int32_t id) {
+  std::array<int32_t, 6> out = {{255, -1, -1, -1, -1, -1}};
+  if (!provisioning_ok(key) || id < 0 || id > 253) return out;
+  const duck::ProtectionConfig& pc = duck::kRobotConfig.protection;
+  duck::Protection p;
+  p.max_temperature_c = pc.max_temperature_c;
+  p.unload_condition = pc.unload_condition;
+  p.holding_torque_pct = pc.holding_torque_pct;
+  p.protection_time_10ms = pc.protection_time_10ms;
+  p.overload_torque_pct = pc.overload_torque_pct;
+  g_bus.allow_eeprom(true);
+  out[0] = static_cast<int32_t>(g_bus.write_protection(static_cast<uint8_t>(id), p));
+  g_bus.allow_eeprom(false);
+  duck::Protection r;
+  if (g_bus.read_protection(static_cast<uint8_t>(id), &r) == duck::BusError::kOk) {
+    out[1] = r.max_temperature_c;
+    out[2] = r.unload_condition;
+    out[3] = r.holding_torque_pct;
+    out[4] = r.protection_time_10ms;
+    out[5] = r.overload_torque_pct;
+  }
+  return out;
+}
+
+// Changes a servo's ID. Have ONLY that servo on the bus.
+int32_t rpc_set_id(uint32_t key, int32_t old_id, int32_t new_id) {
+  if (!provisioning_ok(key) || old_id < 0 || old_id > 253 || new_id < 0 || new_id > 253) return 255;
+  g_bus.allow_eeprom(true);
+  const duck::BusError e = g_bus.write_id(static_cast<uint8_t>(old_id), static_cast<uint8_t>(new_id));
+  g_bus.allow_eeprom(false);
+  return static_cast<int32_t>(e);
+}
+#endif  // DUCK_ENABLE_EEPROM_WRITE
+
+// ---------------------------------------------------------------------------
+
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);  // off (the LED is active low)
+
+  DUCK_SERVO_SERIAL.begin(duck::kRobotConfig.servo.baud);
+  g_imu_present = imu_begin();
+
+  Bridge.begin(DUCK_BRIDGE_BAUD);
+  // provide_safe: the handlers run from loop(), never in the middle of a control tick.
+  Bridge.provide_safe("duck_info", rpc_info);
+  Bridge.provide_safe("duck_status", rpc_status);
+  Bridge.provide_safe("duck_joints", rpc_joints);
+  Bridge.provide_safe("duck_state", rpc_state);
+  Bridge.provide_safe("duck_setpoints", rpc_setpoints);
+  Bridge.provide_safe("duck_health", rpc_health);
+  Bridge.provide_safe("duck_ping", rpc_ping);
+  Bridge.provide_safe("duck_scan", rpc_scan);
+  Bridge.provide_safe("duck_read", rpc_read);
+  Bridge.provide_safe("duck_set_echo", rpc_set_echo);
+  Bridge.provide_safe("duck_heartbeat", rpc_heartbeat);
+  Bridge.provide_safe("duck_arm", rpc_arm);
+  Bridge.provide_safe("duck_disarm", rpc_disarm);
+  Bridge.provide_safe("duck_clear_fault", rpc_clear_fault);
+  Bridge.provide_safe("duck_stand", rpc_stand);
+  Bridge.provide_safe("duck_sit", rpc_sit);
+  Bridge.provide_safe("duck_set_targets", rpc_set_targets);
+  Bridge.provide_safe("duck_step", rpc_step);
+  Bridge.provide_safe("duck_set_head", rpc_set_head);
+#if DUCK_ENABLE_EEPROM_WRITE
+  Bridge.provide_safe("duck_write_limits", rpc_write_limits);
+  Bridge.provide_safe("duck_write_protection", rpc_write_protection);
+  Bridge.provide_safe("duck_set_id", rpc_set_id);
+#endif
+  g_next_tick_ms = millis();
+}
+
+void loop() {
+  const uint32_t now = millis();
+
+  float up[3];
+  if (imu_poll(up)) {
+    g_imu.up[0] = up[0];
+    g_imu.up[1] = up[1];
+    g_imu.up[2] = up[2];
+    g_imu.valid = true;
+    g_imu.t_ms = now;
+  }
+
+  if (static_cast<int32_t>(now - g_next_tick_ms) >= 0) {
+    g_next_tick_ms += DUCK_TICK_MS;
+    if (static_cast<int32_t>(now - g_next_tick_ms) > 5 * DUCK_TICK_MS) g_next_tick_ms = now + DUCK_TICK_MS;
+    const uint32_t t0 = micros();
+    g_ctl.tick(now, g_imu);
+    const uint32_t dt = micros() - t0;
+    if (dt > g_tick_us_max) g_tick_us_max = dt;
+
+    // LED: armed = on, fault = fast blink, disarmed = short flash every second.
+    const duck::Mode mode = g_ctl.status().mode;
+    bool led_on;
+    if (mode == duck::Mode::kArmed) {
+      led_on = true;
+    } else if (mode == duck::Mode::kFault) {
+      led_on = (now / 100) % 2 == 0;
+    } else {
+      led_on = (now % 1000) < 50;
+    }
+    digitalWrite(LED_BUILTIN, led_on ? LOW : HIGH);
+  }
+}
