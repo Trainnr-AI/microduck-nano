@@ -84,6 +84,10 @@ struct Reply {
   uint8_t params[32];
 };
 
+// Where the first 0xFF 0xFF header in buf starts, skipping a third 0xFF of the same run (an ID is never 0xFF): the ID
+// is at the result + 2. No header in buf when result + 1 >= n.
+size_t find_header(const uint8_t* buf, size_t n);
+
 // Finds the first 0xFF 0xFF header in buf and parses the reply after it.
 // kIncomplete = more bytes are needed.
 Parse parse_reply(const uint8_t* buf, size_t n, Reply* out);

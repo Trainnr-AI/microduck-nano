@@ -26,42 +26,58 @@ uint16_t glyph(char c) {
   return kFont[c - 32];
 }
 
-const char* const kFaultNames[] = {"", "OVERLOAD", "HOT", "LOW VOLTS", "SERVO ERROR", "NO ANSWER", "FALL",
+// Index 0 of the fault and posture tables (no fault, unknown posture) is shown as "?", like a code out of range.
+const char* const kFaultNames[] = {"?", "OVERLOAD", "HOT", "LOW VOLTS", "SERVO ERROR", "NO ANSWER", "FALL",
                                    "BUS WRITE"};
 const char* const kJointNames[kNumJoints] = {
     "L HIP YAW", "L HIP ROLL", "L HIP PITCH", "L KNEE", "L ANKLE", "NECK", "HEAD PITCH", "HEAD YAW", "HEAD ROLL",
     "R HIP YAW", "R HIP ROLL", "R HIP PITCH", "R KNEE", "R ANKLE", "BEAK"};
-const char* const kPostureNames[] = {"", "STAND", "SIT", "SITTING", "STANDING", "TO STAND"};
+const char* const kPostureNames[] = {"?", "STAND", "SIT", "SITTING", "STANDING", "TO STAND"};
+
+template <int N>
+const char* name_at(const char* const (&table)[N], int i) {
+  return i >= 0 && i < N ? table[i] : "?";
+}
 
 // Bounded text builder.
 struct Text {
   char* buf;
   int n;
-  void put(const char* s) {
-    while (*s && n < kTextMax - 1) buf[n++] = *s++;
+  void put_char(char c) {
+    if (n >= kTextMax - 1) return;
+    buf[n++] = c;
     buf[n] = '\0';
   }
+  void put(const char* s) {
+    while (*s) put_char(*s++);
+  }
   void put_int(long v, bool sign) {
-    char digits[12];
+    if (v < 0) {
+      put_char('-');
+    } else if (sign) {
+      put_char('+');
+    }
+    // Magnitude in unsigned arithmetic: well defined for LONG_MIN too.
+    unsigned long u = v < 0 ? 0ul - static_cast<unsigned long>(v) : static_cast<unsigned long>(v);
+    char digits[3 * sizeof(long)];
     int k = 0;
-    const bool neg = v < 0;
-    unsigned long u = static_cast<unsigned long>(neg ? -v : v);
     do {
       digits[k++] = static_cast<char>('0' + u % 10);
       u /= 10;
-    } while (u && k < 11);
-    char s[14];
-    int m = 0;
-    if (neg) {
-      s[m++] = '-';
-    } else if (sign) {
-      s[m++] = '+';
-    }
-    while (k) s[m++] = digits[--k];
-    s[m] = '\0';
-    put(s);
+    } while (u);
+    while (k) put_char(digits[--k]);
   }
 };
+
+// "FAULT HOT L KNEE": the prefix, the fault's name, and the joint's when there is one.
+void put_fault(Text& t, const char* prefix, Fault fault, int joint) {
+  t.put(prefix);
+  t.put(name_at(kFaultNames, static_cast<int>(fault)));
+  if (joint >= 0 && joint < kNumJoints) {
+    t.put(" ");
+    t.put(kJointNames[joint]);
+  }
+}
 
 int str_len(const char* s) {
   int n = 0;
@@ -159,30 +175,17 @@ int display_text(const DisplayInput& in, char* buf) {
   buf[0] = '\0';
   const Status& s = in.status;
   const BenchState& b = in.bench;
-  const bool bench_joint = b.joint >= 0 && b.joint < kNumJoints;
   if (b.mode == BenchMode::kFault) {
-    t.put("BENCH FAULT ");
-    const int f = static_cast<int>(b.fault);
-    t.put(f > 0 && f < static_cast<int>(sizeof(kFaultNames) / sizeof(kFaultNames[0])) ? kFaultNames[f] : "?");
-    if (bench_joint) {
-      t.put(" ");
-      t.put(kJointNames[b.joint]);
-    }
+    put_fault(t, "BENCH FAULT ", b.fault, b.joint);
     return t.n;
   }
   if (b.mode == BenchMode::kArmed) {  // a servo has torque: say so before anything else
     t.put("BENCH ");
-    t.put(bench_joint ? kJointNames[b.joint] : "?");
+    t.put(name_at(kJointNames, b.joint));
     return t.n;
   }
   if (s.mode == Mode::kFault) {
-    t.put("FAULT ");
-    const int f = static_cast<int>(s.fault);
-    t.put(f > 0 && f < static_cast<int>(sizeof(kFaultNames) / sizeof(kFaultNames[0])) ? kFaultNames[f] : "?");
-    if (s.fault_joint >= 0 && s.fault_joint < kNumJoints) {
-      t.put(" ");
-      t.put(kJointNames[s.fault_joint]);
-    }
+    put_fault(t, "FAULT ", s.fault, s.fault_joint);
     return t.n;
   }
   if (message_up(in)) {
@@ -192,8 +195,7 @@ int display_text(const DisplayInput& in, char* buf) {
   // The status ticker.
   if (s.mode == Mode::kArmed) {
     t.put("ARMED ");
-    const int p = static_cast<int>(s.posture);
-    t.put(p > 0 && p < static_cast<int>(sizeof(kPostureNames) / sizeof(kPostureNames[0])) ? kPostureNames[p] : "?");
+    t.put(name_at(kPostureNames, static_cast<int>(s.posture)));
   } else {
     t.put("SAFE");
   }

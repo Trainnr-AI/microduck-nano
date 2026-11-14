@@ -7,19 +7,47 @@
 
 Also prints the servo angle limits in steps that follow from the joint table
 (what would go into each servo's EEPROM, registers 9 and 11).
+
+--check also checks that the name tables outside the firmware (the Python
+client's, and the Rust runtime's) have one name per value of the firmware's
+enums, so a new fault or result code cannot be decoded as the wrong name.
 """
 import argparse
+import ast
 import json
+import math
+import re
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROBOT_JSON = HERE.parent / "config" / "robot.json"
-HEADER = HERE.parent / "app" / "microduck" / "sketch" / "src" / "duck" / "robot_config_data.h"
+CORE = HERE.parent / "app" / "microduck" / "sketch" / "src" / "duck"
+HEADER = CORE / "robot_config_data.h"
+CLIENT = HERE.parent / "app" / "microduck" / "python" / "duck_client.py"
+RUNTIME = HERE.parent.parent / "runtime" / "src"
 
 JOINT_ORDER = ["left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle",
                "neck_pitch", "head_pitch", "head_yaw", "head_roll",
                "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee", "right_ankle", "beak"]
+NUM_POSE_JOINTS = 14  # every joint but the beak (kNumPoseJoints)
+POSE_JOINTS = JOINT_ORDER[:NUM_POSE_JOINTS]
+
+# C++ enum (header in CORE) -> its name table in duck_client.py, and in the runtime as (file, constant).
+NAME_TABLES = {
+    "JointIndex": ("robot_config.h", "JOINTS", ("robot.rs", "JOINT_NAMES")),
+    "Mode": ("controller.h", "MODES", ("firmware.rs", "MODES")),
+    "Posture": ("controller.h", "POSTURES", ("firmware.rs", "POSTURES")),
+    "Result": ("controller.h", "RESULTS", ("firmware.rs", "RESULTS")),
+    "Fault": ("safety.h", "FAULTS", ("firmware.rs", "FAULTS")),
+    "BusError": ("scs_bus.h", "BUS_ERRORS", None),
+    "BenchMode": ("bench.h", "BENCH_MODES", ("firmware.rs", "BENCH_MODES")),
+}
+
+
+def round_half_away(x):
+    """Round to nearest, halves away from zero: the firmware's round_to_long()."""
+    return int(math.copysign(math.floor(abs(x) + 0.5), x))
 
 
 def f(x):
@@ -47,7 +75,7 @@ def validate(r):
         if not j["min_deg"] <= j["max_deg"]:
             sys.exit(f"{j['name']}: min_deg > max_deg")
     for pose in ("STAND", "SIT"):
-        for j in r["joints"][:14]:
+        for j in r["joints"][:NUM_POSE_JOINTS]:
             v = r["poses"][pose][j["name"]]
             if not j["min_deg"] <= v <= j["max_deg"]:
                 sys.exit(f"pose {pose}: {j['name']} = {v} is outside its limits")
@@ -96,7 +124,7 @@ def render(r):
           f'{f(j["min_deg"])}, {f(j["max_deg"])}, {f(j["max_speed_dps"])}}},  // {j["name"]}')
     w("  },")
     for pose in ("STAND", "SIT"):
-        w(f"  /* {pose} */ {arr(r['poses'][pose][n] for n in JOINT_ORDER[:14])},")
+        w(f"  /* {pose} */ {arr(r['poses'][pose][n] for n in POSE_JOINTS)},")
     h = r["head_interlock"]
     w(f"  /* head interlock */ {{{f(h['yaw_window_deg'])}, {f(h['yaw_margin_deg'])}, {f(h['roll_max_deg'])}, "
       f"{f(h['roll_margin_deg'])}, {f(h['roll_free_deg'])}}},")
@@ -149,12 +177,65 @@ def print_step_limits(r):
     spd = r["servo"]["steps_per_deg"]
     print("servo angle limits in steps (registers 9 / 11), from the joint table:")
     for j in r["joints"]:
-        a = j["zero_step"] + j["direction"] * round(j["min_deg"] * spd)
-        c = j["zero_step"] + j["direction"] * round(j["max_deg"] * spd)
+        a = j["zero_step"] + j["direction"] * round_half_away(j["min_deg"] * spd)
+        c = j["zero_step"] + j["direction"] * round_half_away(j["max_deg"] * spd)
         lo, hi = min(a, c), max(a, c)
         note = "" if j["calibrated"] else "   (PLACEHOLDER zero / direction)"
         warn = "   OUT OF 0..1023!" if lo < 0 or hi > 1023 else ""
         print(f"  {j['name']:16s} id {str(j['servo_id']):>4s}  {lo:5d} .. {hi:5d}{note}{warn}")
+
+
+def enum_count(header, name):
+    """How many values the C++ enum `name` in `header` has (enumerators are listed one by one, from 0)."""
+    text = (CORE / header).read_text()
+    m = re.search(r"enum\s+(?:class\s+)?" + name + r"\b[^{;]*\{(.*?)\};", text, re.S)
+    if not m:
+        sys.exit(f"{header}: enum {name} not found")
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    return len([e for e in body.split(",") if e.strip()])
+
+
+def client_tables():
+    tree = ast.parse(CLIENT.read_text())
+    return {t.id: ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+            for t in node.targets if isinstance(t, ast.Name) and isinstance(node.value, (ast.List, ast.Tuple))}
+
+
+def rust_table_len(path, const):
+    m = re.search(r"\bconst\s+" + const + r"\s*:\s*\[&(?:'static\s+)?str;\s*(\d+)\s*\]", path.read_text())
+    if not m:
+        sys.exit(f"{path.name}: no `const {const}: [&str; N]`")
+    return int(m.group(1))
+
+
+def check_name_tables():
+    """Every name table outside the firmware has one entry per value of the firmware's enum."""
+    problems = []
+    for name, value in (("kNumJoints", len(JOINT_ORDER)), ("kNumPoseJoints", NUM_POSE_JOINTS)):
+        m = re.search(r"constexpr int " + name + r" = (\d+);", (CORE / "robot_config.h").read_text())
+        if not m or int(m.group(1)) != value:
+            problems.append(f"robot_config.h: {name} is not {value}")
+    client = client_tables()
+    if client.get("JOINTS") != JOINT_ORDER:
+        problems.append("duck_client.py: JOINTS is not the joint order of robot.json")
+    for enum, (header, py_name, rust) in NAME_TABLES.items():
+        n = enum_count(header, enum)
+        if py_name not in client:
+            problems.append(f"duck_client.py: no table {py_name} for {enum}")
+        elif len(client[py_name]) != n:
+            problems.append(f"duck_client.py: {py_name} has {len(client[py_name])} names, {enum} has {n} values")
+        if rust is None:
+            continue
+        path = RUNTIME / rust[0]
+        if not path.exists():
+            print(f"(no {path.relative_to(HERE.parent.parent)}: the runtime's name tables were not checked)")
+            continue
+        size = rust_table_len(path, rust[1])
+        if size != n:
+            problems.append(f"runtime/src/{rust[0]}: {rust[1]} has {size} names, {enum} has {n} values")
+    if problems:
+        sys.exit("name tables out of step with the firmware:\n  " + "\n  ".join(problems))
+    print(f"name tables agree with the firmware's enums ({', '.join(NAME_TABLES)})")
 
 
 def main():
@@ -168,6 +249,7 @@ def main():
         if not HEADER.exists() or HEADER.read_text() != text:
             sys.exit("robot_config_data.h is out of date: run tools/gen_config.py")
         print("robot_config_data.h is up to date")
+        check_name_tables()
         return
     HEADER.write_text(text)
     print(f"wrote {HEADER.relative_to(HERE.parent)}")

@@ -31,9 +31,7 @@ struct BenchState {
   BenchMode mode;
   Fault fault;          // why it is in kFault
   int8_t joint;         // the joint armed (or last armed); -1 never
-  bool read_ok;         // the last read of the servo answered
-  Feedback feedback;    // that read
-  uint32_t read_ms;     // when it was made (the microcontroller's clock)
+  ServoReading reading;  // the last read of the servo (the microcontroller's clock)
   float setpoint_deg;   // the goal written last (after clamp and rate limit)
 };
 
@@ -46,7 +44,7 @@ class BenchServo {
   // Torque off and forget a latched fault (an operator's explicit act). Does nothing on the bus if it is already
   // off, so it cannot disturb an armed robot.
   void disarm();
-  // The joint's target in degrees; ignored unless armed. Clamped and rate-limited in tick().
+  // The joint's target in degrees; ignored unless armed. Clamped here, rate-limited toward in tick().
   Result set_target(float deg, uint32_t now_ms);
   // Every control tick: read the servo, check faults, move the setpoint toward the target, write it. Once off,
   // repeat the torque-off for a while, unless `robot_armed` (the bus is then the robot's).
@@ -59,7 +57,6 @@ class BenchServo {
 
  private:
   void stop(BenchMode next);
-  bool joint_ready(int joint) const;
 
   const RobotConfig& cfg_;
   ScsBus& bus_;
@@ -71,11 +68,8 @@ class BenchServo {
   float setpoint_deg_ = 0.0f;
   uint32_t last_cmd_ms_ = 0;
   uint32_t last_tick_ms_ = 0;
-  bool read_ok_ = false;
-  Feedback fb_ = Feedback();
-  uint32_t read_ms_ = 0;
+  ServoReading reading_ = ServoReading();
   uint32_t off_ticks_ = kOffRepeatTicks;  // ticks since it switched off; nothing to repeat before the first arm
-  static constexpr uint32_t kOffRepeatTicks = 10;
 };
 
 }  // namespace duck

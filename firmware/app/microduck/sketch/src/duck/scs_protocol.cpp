@@ -53,12 +53,16 @@ size_t build_sync_write(uint8_t addr, uint8_t len_each, const uint8_t* ids, cons
   return build_packet(kBroadcastId, kSyncWrite, p, n, out, cap);
 }
 
-Parse parse_reply(const uint8_t* buf, size_t n, Reply* out) {
+size_t find_header(const uint8_t* buf, size_t n) {
   size_t i = 0;
   while (i + 1 < n && !(buf[i] == 0xFF && buf[i + 1] == 0xFF)) ++i;
-  if (i + 1 >= n) return Parse::kIncomplete;
-  // A third 0xFF belongs to the header run (an ID is never 0xFF).
   while (i + 2 < n && buf[i + 2] == 0xFF) ++i;
+  return i;
+}
+
+Parse parse_reply(const uint8_t* buf, size_t n, Reply* out) {
+  const size_t i = find_header(buf, n);
+  if (i + 1 >= n) return Parse::kIncomplete;
   const uint8_t* p = buf + i + 2;  // ID LEN ERROR params... CHECKSUM
   const size_t left = n - i - 2;
   if (left < 2) return Parse::kIncomplete;

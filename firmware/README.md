@@ -23,7 +23,7 @@ the Linux side.
 | `tools/set-link-speed.sh` | Changes the speed of the link between the board's two processors (run on the board with sudo) |
 | `tools/router_call.py` | Calls a firmware function from a shell on the board (debugging) |
 | `app/microduck/` | The Arduino App Lab app that goes on the board |
-| `app/microduck/sketch/` | Microcontroller side: `sketch.ino` (UART, Bridge functions, loop), `imu.cpp` (BNO086), `duck_build_config.h` (build switches) |
+| `app/microduck/sketch/` | Microcontroller side: `sketch.ino` (shared state, setup, control loop), `rpc.cpp` (Bridge functions; `rpc_bench.cpp` and `rpc_provision.cpp` for the bench and provisioning builds), `status_display.cpp` (LEDs), `uart_transport.h` (servo UART), `imu.cpp` (BNO086), `duck_build_config.h` (build switches) |
 | `app/microduck/sketch/src/duck/` | Portable core, no Arduino dependency: SCS protocol and bus driver, joint table, safety layer, sit / stand, balance, state machine |
 | `app/microduck/python/` | Linux side: `main.py` (prints the firmware's status), `duck_client.py` (one method per firmware function) |
 | `tests/` | Unit tests of the portable core against simulated servos; run on a PC |

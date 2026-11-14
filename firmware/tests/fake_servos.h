@@ -39,12 +39,15 @@ struct FakeServo {
 
 struct WriteLog {
   uint8_t id, addr, n;
-  uint8_t data[8];
+  uint8_t data[16];  // ScsBus::write sends at most 16 bytes
 };
+
+// Every ID a servo can have, 0..253 (254 is the broadcast ID).
+constexpr int kServoIds = duck::scs::kBroadcastId;
 
 class FakeBus : public duck::Transport {
  public:
-  FakeServo servo[254];
+  FakeServo servo[kServoIds];
   std::vector<WriteLog> writes;
   std::vector<uint8_t> rx;  // bytes waiting to be read by the host
   size_t tx_bytes = 0;
@@ -52,7 +55,7 @@ class FakeBus : public duck::Transport {
   uint8_t status_error = 0;  // error byte put into every reply
 
   FakeBus() {
-    for (int i = 0; i < 254; ++i) servo[i].present = false;
+    for (int i = 0; i < kServoIds; ++i) servo[i].present = false;
   }
   void add(uint8_t id) { servo[id].present = true; }
 
@@ -69,27 +72,32 @@ class FakeBus : public duck::Transport {
   }
   void discard_input() override { rx.clear(); }
 
-  // Did any logged write touch torque-enable with a non-zero value or a goal register?
-  bool any_motion_write() const {
+  // Is `hit(address, value)` true for any byte of any logged write?
+  template <class Hit>
+  bool any_written_byte(Hit hit) const {
     for (const WriteLog& w : writes) {
       for (uint8_t i = 0; i < w.n; ++i) {
-        uint8_t a = w.addr + i;
-        if (a == duck::scs::reg::kTorqueEnable && w.data[i] != 0) return true;
-        if (a >= duck::scs::reg::kGoalPosition && a < duck::scs::reg::kLock) return true;
+        if (hit(static_cast<uint8_t>(w.addr + i), w.data[i])) return true;
       }
     }
     return false;
   }
+  // Torque-enable set non-zero, or a goal register written.
+  bool any_motion_write() const {
+    return any_written_byte([](uint8_t a, uint8_t v) {
+      return (a == duck::scs::reg::kTorqueEnable && v != 0) ||
+             (a >= duck::scs::reg::kGoalPosition && a < duck::scs::reg::kLock);
+    });
+  }
+  // An EEPROM register written, or the EEPROM unlocked.
   bool any_eeprom_write() const {
-    for (const WriteLog& w : writes) {
-      if (w.addr < duck::scs::reg::kFirstRamRegister) return true;
-      if (w.addr == duck::scs::reg::kLock && w.data[0] == 0) return true;
-    }
-    return false;
+    return any_written_byte([](uint8_t a, uint8_t v) {
+      return a < duck::scs::reg::kFirstRamRegister || (a == duck::scs::reg::kLock && v == 0);
+    });
   }
   int torque_count() const {
     int c = 0;
-    for (int i = 0; i < 254; ++i) c += servo[i].present && servo[i].torque();
+    for (int i = 0; i < kServoIds; ++i) c += servo[i].present && servo[i].torque();
     return c;
   }
 
@@ -103,10 +111,10 @@ class FakeBus : public duck::Transport {
   }
   void apply(uint8_t id, uint8_t addr, const uint8_t* data, uint8_t n) {
     WriteLog w;
-    w.id = id; w.addr = addr; w.n = n < 8 ? n : 8;
+    w.id = id; w.addr = addr; w.n = n < sizeof(w.data) ? n : sizeof(w.data);
     memcpy(w.data, data, w.n);
     writes.push_back(w);
-    for (int s = 0; s < 254; ++s) {
+    for (int s = 0; s < kServoIds; ++s) {
       if (!servo[s].present || (id != duck::scs::kBroadcastId && id != s)) continue;
       FakeServo& sv = servo[s];
       for (uint8_t i = 0; i < n && addr + i < 80; ++i) {
@@ -123,7 +131,7 @@ class FakeBus : public duck::Transport {
     uint8_t id = d[2], len = d[3], inst = d[4];
     if ((size_t)len + 4 != n || duck::scs::checksum(d + 2, len + 1) != d[n - 1]) return;
     const uint8_t* p = d + 5;
-    bool answers = id < 254 && servo[id].present && !servo[id].mute;
+    bool answers = id < kServoIds && servo[id].present && !servo[id].mute;
     switch (inst) {
       case duck::scs::kPing:
         if (answers) reply(id, nullptr, 0);

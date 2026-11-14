@@ -50,8 +50,19 @@ _NUM = {0xCC: (">B", 1), 0xCD: (">H", 2), 0xCE: (">I", 4), 0xCF: (">Q", 8), 0xD0
         0xD2: (">i", 4), 0xD3: (">q", 8), 0xCA: (">f", 4), 0xCB: (">d", 8)}
 
 
+class Incomplete(Exception):
+    """The buffer ends before the value does: read more bytes."""
+
+
+def _take(b, i, n):
+    """b[i:i + n], or Incomplete if the buffer is shorter."""
+    if i + n > len(b):
+        raise Incomplete
+    return b[i:i + n]
+
+
 def unpack(b, i=0):
-    t = b[i]
+    t = _take(b, i, 1)[0]
     if t < 0x80:
         return t, i + 1
     if t >= 0xE0:
@@ -60,9 +71,9 @@ def unpack(b, i=0):
         if t <= 0x9F:
             n, i = t & 15, i + 1
         elif t == 0xDC:
-            n, i = struct.unpack(">H", b[i + 1:i + 3])[0], i + 3
+            n, i = struct.unpack(">H", _take(b, i + 1, 2))[0], i + 3
         else:
-            n, i = struct.unpack(">I", b[i + 1:i + 5])[0], i + 5
+            n, i = struct.unpack(">I", _take(b, i + 1, 4))[0], i + 5
         out = []
         for _ in range(n):
             v, i = unpack(b, i)
@@ -70,18 +81,20 @@ def unpack(b, i=0):
         return out, i
     if 0xA0 <= t <= 0xBF:
         n = t & 31
-        return b[i + 1:i + 1 + n].decode(errors="replace"), i + 1 + n
+        return _take(b, i + 1, n).decode(errors="replace"), i + 1 + n
     if t == 0xD9:
-        n = b[i + 1]
-        return b[i + 2:i + 2 + n].decode(errors="replace"), i + 2 + n
+        n = _take(b, i + 1, 1)[0]
+        return _take(b, i + 2, n).decode(errors="replace"), i + 2 + n
     if t == 0xC0:
         return None, i + 1
     if t == 0xC2:
         return False, i + 1
     if t == 0xC3:
         return True, i + 1
+    if t not in _NUM:
+        raise ValueError(f"MessagePack type 0x{t:02X} at byte {i} is not one this tool decodes")
     fmt, n = _NUM[t]
-    return struct.unpack(fmt, b[i + 1:i + 1 + n])[0], i + 1 + n
+    return struct.unpack(fmt, _take(b, i + 1, n))[0], i + 1 + n
 
 
 def call(method, *args, timeout=3.0):
@@ -93,11 +106,11 @@ def call(method, *args, timeout=3.0):
         while True:
             chunk = s.recv(4096)
             if not chunk:
-                return "connection closed"
+                raise ConnectionError(f"the router closed the connection after {len(buf)} bytes, before a whole reply")
             buf += chunk
             try:
                 return unpack(buf)[0]
-            except (IndexError, struct.error, KeyError):
+            except Incomplete:
                 continue  # reply not complete yet
 
 

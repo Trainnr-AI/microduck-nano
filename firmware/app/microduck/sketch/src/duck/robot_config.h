@@ -27,8 +27,8 @@ struct ServoConfig {
   uint16_t goal_speed;      // steps/s written with every goal; meaning of 0 UNCONFIRMED
 };
 
-// Joint names are not stored here: the firmware never needs them (they live in
-// config/robot.json and in the Python client).
+// Joint names are not stored here: they live in config/robot.json, and the status display has its own short ones
+// (display.cpp).
 struct JointConfig {
   uint8_t servo_id;         // kServoIdUnassigned until decided
   int16_t zero_step;        // servo step at the joint's zero
@@ -96,7 +96,10 @@ struct RobotConfig {
   ProtectionConfig protection;
 };
 
-// True when every joint has a servo ID (all different) and is marked calibrated.
+// True when this joint can be driven: marked calibrated, a servo ID (0..253), a direction of +-1, min <= max, and a
+// servo step size above zero.
+bool joint_ready(const RobotConfig& cfg, int joint);
+// True when every joint is ready and no two share a servo ID.
 bool config_ready_for_motion(const RobotConfig& cfg);
 
 // Joint angle <-> servo step. deg_to_step clamps to the joint's limits and to

@@ -71,8 +71,8 @@ struct DisplayOutput {
 
 void render_display(const DisplayInput& in, uint32_t now_ms, DisplayOutput* out);
 
-// The text render_display() puts up for this input (for tests and for duck_client's status line). Returns its
-// length; `text` must hold at least kTextMax bytes.
+// The text render_display() puts up for this input (render_display() and the tests use it). Returns its length;
+// `text` must hold at least kTextMax bytes.
 constexpr int kTextMax = 96;
 int display_text(const DisplayInput& in, char* text);
 

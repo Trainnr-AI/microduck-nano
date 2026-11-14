@@ -24,6 +24,14 @@ namespace duck {
 
 constexpr uint32_t kArmKey = 0xD0C5A4B3u;
 
+// After torque goes off, "torque off" is broadcast again in case a write was lost on a failing bus: on each of the
+// first kOffRepeatTicks ticks, then every kOffRepeatPeriod ticks (once a second) while a fault is latched.
+constexpr uint32_t kOffRepeatTicks = 10;
+constexpr uint32_t kOffRepeatPeriod = 100;
+inline bool off_repeat_due(uint32_t ticks_since_off, bool fault_latched) {
+  return ticks_since_off < kOffRepeatTicks || (fault_latched && ticks_since_off % kOffRepeatPeriod == 0);
+}
+
 enum class Mode : uint8_t { kDisarmed = 0, kArmed, kFault };
 
 enum class Posture : uint8_t {
@@ -107,11 +115,13 @@ class Controller {
   Status status() const;
   const float* setpoint_deg() const { return filter_.setpoint(); }
   const float* measured_deg() const { return measured_; }
-  const Feedback& feedback(int joint) const { return fb_[joint]; }
-  bool feedback_valid(int joint) const { return fb_valid_[joint]; }
+  const Feedback& feedback(int joint) const { return servo_[joint].fb; }
+  bool feedback_valid(int joint) const { return servo_[joint].ok; }
 
  private:
+  void release();  // torque off, motion gate closed, move cancelled, posture unknown; the caller sets the mode
   void enter_fault();
+  BusError write_goals(const uint16_t steps[kNumJoints]);
   bool imu_usable(const ImuSample& imu, uint32_t now_ms) const;
   bool gyro_usable(const ImuSample& imu, uint32_t now_ms) const;
   void poll_one_servo(uint32_t now_ms);
@@ -131,11 +141,10 @@ class Controller {
   bool supported_ = false;
   bool timed_out_ = false;
   float move_progress_ = 0.0f;
-  float user_[kNumJoints];     // last targets from the Linux side
-  float nominal_[kNumJoints];  // what was asked of the filter, before balance
-  float measured_[kNumJoints];
-  Feedback fb_[kNumJoints];
-  bool fb_valid_[kNumJoints];
+  float user_[kNumJoints] = {};     // last targets from the Linux side
+  float nominal_[kNumJoints] = {};  // what was asked of the filter, before balance
+  float measured_[kNumJoints] = {};
+  ServoReading servo_[kNumJoints] = {};
   uint16_t flags_ = 0;
   Tilt tilt_ = {0.0f, 0.0f};
   bool imu_ok_ = false;

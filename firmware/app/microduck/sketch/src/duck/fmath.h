@@ -15,6 +15,8 @@ constexpr float kPi = 3.14159265358979f;
 
 inline float absf(float v) { return v < 0.0f ? -v : v; }
 inline bool finitef(float v) { return (v - v) == 0.0f; }  // false for NaN and +-infinity
+// v limited to lo..hi (lo first if lo > hi). NaN passes through unchanged: callers that can see one check it first.
+inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 float sqrt_f(float v);          // v < 0 gives 0
 float sin_f(float radians);     // any angle

@@ -41,9 +41,7 @@ BusError ScsBus::receive(uint8_t id, Reply* reply) {
     // Ask for the smallest reply first, then for whatever the length byte says.
     size_t want = 6;
     if (have >= 4) {
-      size_t i = 0;
-      while (i + 1 < have && !(buf[i] == 0xFF && buf[i + 1] == 0xFF)) ++i;
-      while (i + 2 < have && buf[i + 2] == 0xFF) ++i;
+      const size_t i = find_header(buf, have);
       if (i + 3 < have) want = i + 4 + buf[i + 3];
     }
     if (want > sizeof(buf)) return BusError::kBadReply;
@@ -81,15 +79,6 @@ BusError ScsBus::read(uint8_t id, uint8_t addr, uint8_t* data, uint8_t n, uint8_
   return BusError::kOk;
 }
 
-BusError ScsBus::read_u8(uint8_t id, uint8_t addr, uint8_t* value) { return read(id, addr, value, 1); }
-
-BusError ScsBus::read_u16(uint8_t id, uint8_t addr, uint16_t* value) {
-  uint8_t b[2];
-  const BusError e = read(id, addr, b, 2);
-  if (e == BusError::kOk) *value = get_u16(b);
-  return e;
-}
-
 BusError ScsBus::read_feedback(uint8_t id, Feedback* fb) {
   uint8_t b[8];  // 56..63
   uint8_t err = 0;
@@ -115,8 +104,8 @@ BusError ScsBus::read_angle_limits(uint8_t id, uint16_t* min_step, uint16_t* max
 }
 
 BusError ScsBus::read_protection(uint8_t id, Protection* p) {
-  BusError e = read_u8(id, reg::kMaxTemperature, &p->max_temperature_c);
-  if (e == BusError::kOk) e = read_u8(id, reg::kUnloadCondition, &p->unload_condition);
+  BusError e = read(id, reg::kMaxTemperature, &p->max_temperature_c, 1);
+  if (e == BusError::kOk) e = read(id, reg::kUnloadCondition, &p->unload_condition, 1);
   uint8_t b[3];
   if (e == BusError::kOk) e = read(id, reg::kHoldingTorque, b, 3);
   if (e == BusError::kOk) {
@@ -142,10 +131,7 @@ BusError ScsBus::torque_off(uint8_t id) {
   return write(id, reg::kTorqueEnable, &off, 1);
 }
 
-void ScsBus::torque_off_all() {
-  const uint8_t off = 0;
-  write(kBroadcastId, reg::kTorqueEnable, &off, 1);
-}
+void ScsBus::torque_off_all() { torque_off(kBroadcastId); }
 
 BusError ScsBus::torque_on(uint8_t id) {
   if (id >= kBroadcastId) return BusError::kBadArg;  // never broadcast "torque on"
@@ -180,42 +166,39 @@ BusError ScsBus::sync_write_goal(const uint8_t* ids, const uint16_t* positions, 
   return BusError::kOk;  // sync write is a broadcast: no reply
 }
 
-// EEPROM writes: unlock (48 = 0), write, lock (48 = 1), as Feetech's library does.
-BusError ScsBus::write_angle_limits(uint8_t id, uint16_t min_step, uint16_t max_step) {
-  if (id >= kBroadcastId || min_step >= max_step || max_step > 1023) return BusError::kBadArg;
+// EEPROM writes: unlock (48 = 0), the writes in order until one fails, then lock (48 = 1) whatever happened, as
+// Feetech's library does. The lock goes to `lock_id`: after an ID change the servo answers under its new ID.
+BusError ScsBus::write_eeprom(uint8_t id, const EepromChunk* chunks, size_t count, uint8_t lock_id) {
   if (!eeprom_ok_) return BusError::kGated;
   const uint8_t unlock = 0, lock = 1;
+  BusError e = write(id, reg::kLock, &unlock, 1);
+  for (size_t i = 0; i < count && e == BusError::kOk; ++i) e = write(id, chunks[i].addr, chunks[i].data, chunks[i].n);
+  const BusError e2 = write(lock_id, reg::kLock, &lock, 1);
+  return e != BusError::kOk ? e : e2;
+}
+
+BusError ScsBus::write_angle_limits(uint8_t id, uint16_t min_step, uint16_t max_step) {
+  if (id >= kBroadcastId || min_step >= max_step || max_step > 1023) return BusError::kBadArg;
   uint8_t b[4];
   put_u16(b, min_step);
   put_u16(b + 2, max_step);
-  BusError e = write(id, reg::kLock, &unlock, 1);
-  if (e == BusError::kOk) e = write(id, reg::kMinAngleLimit, b, 4);
-  const BusError e2 = write(id, reg::kLock, &lock, 1);
-  return e != BusError::kOk ? e : e2;
+  const EepromChunk chunks[] = {{reg::kMinAngleLimit, b, 4}};
+  return write_eeprom(id, chunks, 1, id);
 }
 
 BusError ScsBus::write_protection(uint8_t id, const Protection& p) {
   if (id >= kBroadcastId) return BusError::kBadArg;
-  if (!eeprom_ok_) return BusError::kGated;
-  const uint8_t unlock = 0, lock = 1;
   const uint8_t tail[3] = {p.holding_torque_pct, p.protection_time_10ms, p.overload_torque_pct};
-  BusError e = write(id, reg::kLock, &unlock, 1);
-  if (e == BusError::kOk) e = write(id, reg::kMaxTemperature, &p.max_temperature_c, 1);
-  if (e == BusError::kOk) e = write(id, reg::kUnloadCondition, &p.unload_condition, 1);
-  if (e == BusError::kOk) e = write(id, reg::kHoldingTorque, tail, 3);
-  const BusError e2 = write(id, reg::kLock, &lock, 1);
-  return e != BusError::kOk ? e : e2;
+  const EepromChunk chunks[] = {{reg::kMaxTemperature, &p.max_temperature_c, 1},
+                                {reg::kUnloadCondition, &p.unload_condition, 1},
+                                {reg::kHoldingTorque, tail, 3}};
+  return write_eeprom(id, chunks, 3, id);
 }
 
 BusError ScsBus::write_id(uint8_t id, uint8_t new_id) {
-  if (id >= kBroadcastId || new_id >= 254) return BusError::kBadArg;
-  if (!eeprom_ok_) return BusError::kGated;
-  const uint8_t unlock = 0, lock = 1;
-  BusError e = write(id, reg::kLock, &unlock, 1);
-  if (e == BusError::kOk) e = write(id, reg::kId, &new_id, 1);
-  // The servo answers the lock under its new ID.
-  const BusError e2 = write(new_id, reg::kLock, &lock, 1);
-  return e != BusError::kOk ? e : e2;
+  if (id >= kBroadcastId || new_id >= kBroadcastId) return BusError::kBadArg;
+  const EepromChunk chunks[] = {{reg::kId, &new_id, 1}};
+  return write_eeprom(id, chunks, 1, new_id);
 }
 
 }  // namespace duck

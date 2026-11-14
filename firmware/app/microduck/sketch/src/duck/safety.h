@@ -24,6 +24,15 @@ enum SafetyFlag : uint16_t {
   kFlagHipMapRight = 1 << 5,
 };
 
+// Steps 2 and 3 for one joint, each setting its flag in *flags when it changes something. They are separate so the
+// bench can clamp a target when it arrives and rate-limit toward it every tick; limit_joint() is both at once.
+float clamp_joint(const JointConfig& j, float deg, uint16_t* flags);
+// setpoint moved toward target by at most max_speed_dps x dt_s.
+float rate_limit(const JointConfig& j, float setpoint, float target, float dt_s, uint16_t* flags);
+inline float limit_joint(const JointConfig& j, float setpoint, float target, float dt_s, uint16_t* flags) {
+  return rate_limit(j, setpoint, clamp_joint(j, target, flags), dt_s, flags);
+}
+
 // Is this left-leg pose inside the measured collision-free set? Between grid
 // values every surrounding grid point must be free ("stricter neighbour").
 bool hip_pose_allowed(const HipMapConfig& map, float pitch, float roll, float yaw, float knee);
@@ -66,6 +75,29 @@ enum class Fault : uint8_t {
   kBusWrite,       // a goal write was refused or failed
 };
 
+// "This condition has been true for `seconds`". The first true sample starts the clock and never trips on its own,
+// even with a zero duration; a false sample stops it.
+class Held {
+ public:
+  bool update(bool condition, uint32_t now_ms, float seconds) {
+    if (!condition) {
+      on_ = false;
+      return false;
+    }
+    if (!on_) {
+      on_ = true;
+      since_ms_ = now_ms;
+      return false;
+    }
+    return static_cast<float>(now_ms - since_ms_) >= seconds * 1000.0f;
+  }
+  void reset() { on_ = false; }
+
+ private:
+  uint32_t since_ms_ = 0;
+  bool on_ = false;
+};
+
 class FaultMonitor {
  public:
   explicit FaultMonitor(const FaultConfig& cfg) : cfg_(cfg) { clear(); }
@@ -73,7 +105,7 @@ class FaultMonitor {
   void on_feedback(int joint, const Feedback& fb, uint32_t now_ms);
   void on_comm_fail(int joint);
   void on_tilt(float pitch_error_deg, float roll_deg, uint32_t now_ms);
-  void tilt_unknown() { tilt_bad_since_valid_ = false; }
+  void tilt_unknown() { tilt_bad_.reset(); }
   void raise(Fault f, int joint) { if (fault_ == Fault::kNone) { fault_ = f; joint_ = joint; } }
   Fault fault() const { return fault_; }
   int fault_joint() const { return joint_; }  // -1 if not tied to a joint
@@ -82,11 +114,9 @@ class FaultMonitor {
   const FaultConfig& cfg_;
   Fault fault_;
   int joint_;
-  uint32_t overload_since_[kNumJoints];
-  bool overloaded_[kNumJoints];
+  Held overloaded_[kNumJoints];
   uint8_t comm_fails_[kNumJoints];
-  uint32_t tilt_bad_since_;
-  bool tilt_bad_since_valid_;
+  Held tilt_bad_;
 };
 
 }  // namespace duck

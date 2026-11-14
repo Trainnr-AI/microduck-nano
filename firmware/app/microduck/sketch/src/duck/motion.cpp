@@ -5,11 +5,7 @@
 
 namespace duck {
 
-namespace {
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
-}  // namespace
-
-float ease_cos(float u) { return (1.0f - cos_f(kPi * clamp01(u))) * 0.5f; }
+float ease_cos(float u) { return (1.0f - cos_f(kPi * clampf(u, 0.0f, 1.0f))) * 0.5f; }
 
 void PoseMove::start(const float from[kNumPoseJoints], const float to[kNumPoseJoints], float duration_s) {
   for (int i = 0; i < kNumPoseJoints; ++i) {
@@ -23,7 +19,7 @@ void PoseMove::start(const float from[kNumPoseJoints], const float to[kNumPoseJo
 
 float PoseMove::advance(float dt_s, float out[kNumPoseJoints]) {
   if (dt_s > 0.0f) t_ += dt_s;
-  const float u = clamp01(t_ / duration_);
+  const float u = clampf(t_ / duration_, 0.0f, 1.0f);
   const float e = ease_cos(u);
   for (int i = 0; i < kNumPoseJoints; ++i) out[i] = from_[i] + (to_[i] - from_[i]) * e;
   if (u >= 1.0f) active_ = false;
@@ -31,7 +27,7 @@ float PoseMove::advance(float dt_s, float out[kNumPoseJoints]) {
 }
 
 float planned_pitch_deg(const MotionConfig& cfg, float sit_fraction) {
-  const float x = clamp01(sit_fraction) * (kPlannedPitchN - 1);
+  const float x = clampf(sit_fraction, 0.0f, 1.0f) * (kPlannedPitchN - 1);
   int i = static_cast<int>(x);
   if (i >= kPlannedPitchN - 1) return cfg.planned_pitch_deg[kPlannedPitchN - 1];
   const float f = x - static_cast<float>(i);
@@ -61,12 +57,7 @@ Tilt tilt_from_up(const ImuConfig& cfg, const float up[3]) {
 float BalanceLaw::update(float pitch_error_deg, float dt_s) {
   if (!finitef(pitch_error_deg)) return correction_;
   const float tau = cfg_.lowpass_ms * 0.001f;
-  float a = 1.0f;
-  if (tau > 0.0f) {
-    a = dt_s / tau;
-    if (a > 1.0f) a = 1.0f;
-    if (a < 0.0f) a = 0.0f;
-  }
+  const float a = tau > 0.0f ? clampf(dt_s / tau, 0.0f, 1.0f) : 1.0f;
   filtered_ += (pitch_error_deg - filtered_) * a;
   float mag = absf(filtered_) - cfg_.dead_zone_deg;
   if (mag < 0.0f) mag = 0.0f;

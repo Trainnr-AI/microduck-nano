@@ -43,8 +43,7 @@ float asin_small(float v) {
 
 float asin_deg(float v) {
   if (!(v == v)) return 0.0f;
-  if (v > 1.0f) v = 1.0f;
-  if (v < -1.0f) v = -1.0f;
+  v = clampf(v, -1.0f, 1.0f);
   const float a = absf(v);
   float r;
   if (a <= 0.5f) {

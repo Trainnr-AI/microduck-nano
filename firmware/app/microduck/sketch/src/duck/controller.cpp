@@ -6,19 +6,27 @@
 namespace duck {
 
 namespace {
-const int kLegJoints[10] = {kLHipYaw, kLHipRoll, kLHipPitch, kLKnee, kLAnkle,
-                            kRHipYaw, kRHipRoll, kRHipPitch, kRKnee, kRAnkle};
-const int kHeadJoints[4] = {kNeckPitch, kHeadPitch, kHeadYaw, kHeadRoll};
+
+// The head joints sit together between the two legs, and the beak after every pose joint: pose_near() and
+// follow_head() rely on this order.
+static_assert(kHeadPitch == kNeckPitch + 1 && kHeadYaw == kHeadPitch + 1 && kHeadRoll == kHeadYaw + 1 &&
+                  kNeckPitch == kLAnkle + 1 && kRHipYaw == kHeadRoll + 1 && kBeak == kNumPoseJoints,
+              "JointIndex order changed: check pose_near() and follow_head()");
+
+bool is_head(int j) { return j >= kNeckPitch && j <= kHeadRoll; }
+
+void follow_head(float want[kNumJoints], const float user[kNumJoints]) {
+  for (int j = kNeckPitch; j <= kHeadRoll; ++j) want[j] = user[j];
+}
+
+// At arming, the trunk pitch must be this close to a keyframe's planned pitch for the robot to be taken as in it.
+constexpr float kPostureTrunkTolDeg = 15.0f;
+
 }  // namespace
 
 Controller::Controller(const RobotConfig& cfg, ScsBus& bus, bool motion_build_enabled)
     : cfg_(cfg), bus_(bus), motion_build_(motion_build_enabled), filter_(cfg), faults_(cfg.faults),
       balance_(cfg.balance) {
-  for (int i = 0; i < kNumJoints; ++i) {
-    user_[i] = nominal_[i] = measured_[i] = 0.0f;
-    fb_valid_[i] = false;
-    fb_[i] = Feedback();
-  }
   bus_.allow_motion(false);
 }
 
@@ -32,17 +40,17 @@ bool Controller::gyro_usable(const ImuSample& imu, uint32_t now_ms) const {
 
 bool Controller::pose_near(const float q[kNumJoints], const float pose[kNumPoseJoints], float tol,
                            bool legs_only) const {
-  for (int k = 0; k < 10; ++k) {
-    const int j = kLegJoints[k];
+  for (int j = 0; j < kNumPoseJoints; ++j) {
+    if (legs_only && is_head(j)) continue;
     if (absf(q[j] - pose[j]) > tol) return false;
   }
-  if (!legs_only) {
-    for (int k = 0; k < 4; ++k) {
-      const int j = kHeadJoints[k];
-      if (absf(q[j] - pose[j]) > tol) return false;
-    }
-  }
   return true;
+}
+
+BusError Controller::write_goals(const uint16_t steps[kNumJoints]) {
+  uint8_t ids[kNumJoints];
+  for (int j = 0; j < kNumJoints; ++j) ids[j] = cfg_.joints[j].servo_id;
+  return bus_.sync_write_goal(ids, steps, kNumJoints, 0, cfg_.servo.goal_speed);
 }
 
 float Controller::sit_fraction() const {
@@ -69,13 +77,11 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   for (int j = 0; j < kNumJoints; ++j) {
     Feedback fb;
     if (bus_.read_feedback(cfg_.joints[j].servo_id, &fb) != BusError::kOk) return Result::kServoMissing;
-    fb_[j] = fb;
-    fb_valid_[j] = true;
+    servo_[j].got(fb, now_ms);
     q[j] = measured_[j] = step_to_deg(cfg_, j, fb.position);
     faults_.on_feedback(j, fb, now_ms);
   }
   if (faults_.fault() != Fault::kNone) {
-    mode_ = Mode::kFault;
     enter_fault();
     return Result::kFaultLatched;
   }
@@ -83,16 +89,14 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   // Start every setpoint at the measured position so nothing jumps, send
   // those goals first, then switch torque on one servo at a time.
   filter_.reset(q);
-  uint8_t ids[kNumJoints];
   uint16_t steps[kNumJoints];
   for (int j = 0; j < kNumJoints; ++j) {
-    ids[j] = cfg_.joints[j].servo_id;
-    steps[j] = static_cast<uint16_t>(fb_[j].position);
+    steps[j] = static_cast<uint16_t>(servo_[j].fb.position);
     user_[j] = nominal_[j] = q[j];
   }
   bus_.allow_motion(true);
-  BusError e = bus_.sync_write_goal(ids, steps, kNumJoints, 0, cfg_.servo.goal_speed);
-  for (int j = 0; j < kNumJoints && e == BusError::kOk; ++j) e = bus_.torque_on(ids[j]);
+  BusError e = write_goals(steps);
+  for (int j = 0; j < kNumJoints && e == BusError::kOk; ++j) e = bus_.torque_on(cfg_.joints[j].servo_id);
   if (e != BusError::kOk) {
     bus_.torque_off_all();
     bus_.allow_motion(false);
@@ -105,11 +109,13 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   const float tol = cfg_.motion.posture_detect_tol_deg;
   Tilt t = {0.0f, 0.0f};
   if (imu_ok) t = tilt_from_up(cfg_.imu, imu.up);
-  if (pose_near(q, cfg_.stand, tol, true) &&
-      (!imu_ok || absf(t.pitch_deg - planned_pitch_deg(cfg_.motion, 0.0f)) < 15.0f)) {
+  auto in_pose = [&](const float pose[kNumPoseJoints], float sit_fraction) {
+    return pose_near(q, pose, tol, true) &&
+           (!imu_ok || absf(t.pitch_deg - planned_pitch_deg(cfg_.motion, sit_fraction)) < kPostureTrunkTolDeg);
+  };
+  if (in_pose(cfg_.stand, 0.0f)) {
     posture_ = Posture::kStanding;
-  } else if (pose_near(q, cfg_.sit, tol, true) &&
-             (!imu_ok || absf(t.pitch_deg - planned_pitch_deg(cfg_.motion, 1.0f)) < 15.0f)) {
+  } else if (in_pose(cfg_.sit, 1.0f)) {
     posture_ = Posture::kSitting;
   }
   supported_ = false;
@@ -121,22 +127,22 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   return Result::kOk;
 }
 
-void Controller::disarm() {
+void Controller::release() {
   bus_.torque_off_all();
   bus_.torque_off_all();
   bus_.allow_motion(false);
   move_.cancel();
-  if (mode_ == Mode::kArmed) mode_ = Mode::kDisarmed;
   posture_ = Posture::kUnknown;
 }
 
+void Controller::disarm() {
+  release();
+  if (mode_ == Mode::kArmed) mode_ = Mode::kDisarmed;
+}
+
 void Controller::enter_fault() {
-  bus_.torque_off_all();
-  bus_.torque_off_all();
-  bus_.allow_motion(false);
-  move_.cancel();
+  release();
   mode_ = Mode::kFault;
-  posture_ = Posture::kUnknown;
   fault_ticks_ = 0;
 }
 
@@ -221,23 +227,19 @@ void Controller::poll_one_servo(uint32_t now_ms) {
   }
   if (j < 0) return;  // no servo assigned at all
   poll_joint_ = (j + 1) % kNumJoints;
-  const uint8_t id = cfg_.joints[j].servo_id;
   Feedback fb;
-  if (bus_.read_feedback(id, &fb) == BusError::kOk) {
-    fb_[j] = fb;
-    fb_valid_[j] = true;
+  if (bus_.read_feedback(cfg_.joints[j].servo_id, &fb) == BusError::kOk) {
+    servo_[j].got(fb, now_ms);
     measured_[j] = step_to_deg(cfg_, j, fb.position);
     if (mode_ == Mode::kArmed) faults_.on_feedback(j, fb, now_ms);
   } else {
-    fb_valid_[j] = false;
+    servo_[j].ok = false;
     if (mode_ == Mode::kArmed) faults_.on_comm_fail(j);
   }
 }
 
 void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
-  float dt = have_tick_ ? static_cast<float>(now_ms - last_tick_ms_) * 0.001f : 0.01f;
-  if (dt < 0.001f) dt = 0.001f;
-  if (dt > 0.05f) dt = 0.05f;
+  const float dt = clampf(have_tick_ ? static_cast<float>(now_ms - last_tick_ms_) * 0.001f : 0.01f, 0.001f, 0.05f);
   last_tick_ms_ = now_ms;
   have_tick_ = true;
 
@@ -254,7 +256,7 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
 
   if (mode_ == Mode::kFault) {
     // Keep saying "torque off" for a while, then once a second.
-    if (fault_ticks_ < 10 || fault_ticks_ % 100 == 0) bus_.torque_off_all();
+    if (off_repeat_due(fault_ticks_, true)) bus_.torque_off_all();
     ++fault_ticks_;
     flags_ = 0;
     return;
@@ -313,13 +315,11 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
         break;
       case Posture::kSitting:
         for (int i = 0; i < kNumPoseJoints; ++i) want[i] = cfg_.sit[i];
-        if (cfg_.motion.head_motion_while_sitting) {
-          for (int k = 0; k < 4; ++k) want[kHeadJoints[k]] = user_[kHeadJoints[k]];
-        }
+        if (cfg_.motion.head_motion_while_sitting) follow_head(want, user_);
         flags |= kStatLegCmdIgnored;
         break;
       default:  // unknown posture: legs hold, head follows
-        for (int k = 0; k < 4; ++k) want[kHeadJoints[k]] = user_[kHeadJoints[k]];
+        follow_head(want, user_);
         flags |= kStatLegCmdIgnored;
         break;
     }
@@ -348,15 +348,9 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   float out[kNumJoints];
   flags |= filter_.step(want, dt, checked_path, out);
 
-  uint8_t ids[kNumJoints];
   uint16_t steps[kNumJoints];
-  for (int j = 0; j < kNumJoints; ++j) {
-    ids[j] = cfg_.joints[j].servo_id;
-    steps[j] = static_cast<uint16_t>(deg_to_step(cfg_, j, out[j]));
-  }
-  if (bus_.sync_write_goal(ids, steps, kNumJoints, 0, cfg_.servo.goal_speed) != BusError::kOk) {
-    faults_.raise(Fault::kBusWrite, -1);
-  }
+  for (int j = 0; j < kNumJoints; ++j) steps[j] = static_cast<uint16_t>(deg_to_step(cfg_, j, out[j]));
+  if (write_goals(steps) != BusError::kOk) faults_.raise(Fault::kBusWrite, -1);
 
   flags_ = flags;
   if (faults_.fault() != Fault::kNone) enter_fault();

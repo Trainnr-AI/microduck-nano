@@ -7,8 +7,6 @@ namespace duck {
 
 namespace {
 
-float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
-
 // Grid points around v: one index if v sits on a grid value (or beyond the
 // ends), otherwise the two neighbours.
 void bracket(const float* grid, int n, float v, int* lo, int* hi) {
@@ -75,6 +73,19 @@ bool head_interlock(const HeadInterlockConfig& c, float prev_yaw, float prev_rol
   return y != y_in || r != r_in;
 }
 
+float clamp_joint(const JointConfig& j, float deg, uint16_t* flags) {
+  const float c = clampf(deg, j.min_deg, j.max_deg);
+  if (c != deg) *flags |= kFlagJointClamp;
+  return c;
+}
+
+float rate_limit(const JointConfig& j, float setpoint, float target, float dt_s, uint16_t* flags) {
+  const float max_step = j.max_speed_dps * dt_s;
+  const float d = clampf(target - setpoint, -max_step, max_step);
+  if (d != target - setpoint) *flags |= kFlagRateLimit;
+  return setpoint + d;
+}
+
 void SafetyFilter::reset(const float current[kNumJoints]) {
   for (int i = 0; i < kNumJoints; ++i) q_[i] = (current[i] == current[i]) ? current[i] : 0.0f;
 }
@@ -86,18 +97,12 @@ uint16_t SafetyFilter::step(const float target[kNumJoints], float dt_s, bool che
   if (dt_s > 0.05f) dt_s = 0.05f;
 
   for (int i = 0; i < kNumJoints; ++i) {
-    const JointConfig& j = cfg_.joints[i];
     float t = target[i];
     if (!finitef(t)) {
       t = q_[i];
       flags |= kFlagNonFinite;
     }
-    const float c = clampf(t, j.min_deg, j.max_deg);
-    if (c != t) flags |= kFlagJointClamp;
-    const float max_step = j.max_speed_dps * dt_s;
-    const float d = clampf(c - q_[i], -max_step, max_step);
-    if (d != c - q_[i]) flags |= kFlagRateLimit;
-    next[i] = q_[i] + d;
+    next[i] = limit_joint(cfg_.joints[i], q_[i], t, dt_s, &flags);
   }
 
   if (head_interlock(cfg_.head, q_[kHeadYaw], q_[kHeadRoll], &next[kHeadYaw], &next[kHeadRoll])) {
@@ -134,12 +139,10 @@ void FaultMonitor::clear() {
   fault_ = Fault::kNone;
   joint_ = -1;
   for (int i = 0; i < kNumJoints; ++i) {
-    overload_since_[i] = 0;
-    overloaded_[i] = false;
+    overloaded_[i].reset();
     comm_fails_[i] = 0;
   }
-  tilt_bad_since_ = 0;
-  tilt_bad_since_valid_ = false;
+  tilt_bad_.reset();
 }
 
 void FaultMonitor::on_feedback(int joint, const Feedback& fb, uint32_t now_ms) {
@@ -148,15 +151,8 @@ void FaultMonitor::on_feedback(int joint, const Feedback& fb, uint32_t now_ms) {
   if (static_cast<float>(fb.temperature_c) >= cfg_.over_temp_c) raise(Fault::kOverTemp, joint);
   if (static_cast<float>(fb.voltage_dv) * 0.1f < cfg_.under_voltage_v) raise(Fault::kUnderVoltage, joint);
   const float load_pct = absf(static_cast<float>(fb.load)) * 0.1f;
-  if (load_pct >= cfg_.overload_load_pct) {
-    if (!overloaded_[joint]) {
-      overloaded_[joint] = true;
-      overload_since_[joint] = now_ms;
-    } else if (static_cast<float>(now_ms - overload_since_[joint]) >= cfg_.overload_s * 1000.0f) {
-      raise(Fault::kOverload, joint);
-    }
-  } else {
-    overloaded_[joint] = false;
+  if (overloaded_[joint].update(load_pct >= cfg_.overload_load_pct, now_ms, cfg_.overload_s)) {
+    raise(Fault::kOverload, joint);
   }
 }
 
@@ -167,16 +163,7 @@ void FaultMonitor::on_comm_fail(int joint) {
 
 void FaultMonitor::on_tilt(float pitch_error_deg, float roll_deg, uint32_t now_ms) {
   const bool bad = absf(pitch_error_deg) > cfg_.fall_pitch_error_deg || absf(roll_deg) > cfg_.fall_roll_deg;
-  if (!bad) {
-    tilt_bad_since_valid_ = false;
-    return;
-  }
-  if (!tilt_bad_since_valid_) {
-    tilt_bad_since_valid_ = true;
-    tilt_bad_since_ = now_ms;
-  } else if (static_cast<float>(now_ms - tilt_bad_since_) >= cfg_.fall_s * 1000.0f) {
-    raise(Fault::kFall, -1);
-  }
+  if (tilt_bad_.update(bad, now_ms, cfg_.fall_s)) raise(Fault::kFall, -1);
 }
 
 }  // namespace duck

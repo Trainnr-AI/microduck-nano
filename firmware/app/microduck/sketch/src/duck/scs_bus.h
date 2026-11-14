@@ -40,6 +40,18 @@ struct Feedback {
   uint8_t error;       // error byte of the reply (scs::kErr* bits)
 };
 
+// The last read of one servo. A failed read clears `ok` and keeps the feedback it had.
+struct ServoReading {
+  Feedback fb;
+  bool ok;      // the last read answered
+  uint32_t ms;  // when `fb` was read (the caller's clock)
+  void got(const Feedback& f, uint32_t now_ms) {
+    fb = f;
+    ok = true;
+    ms = now_ms;
+  }
+};
+
 struct Protection {    // all [T] registers: unconfirmed addresses
   uint8_t max_temperature_c, unload_condition, holding_torque_pct, protection_time_10ms, overload_torque_pct;
 };
@@ -55,15 +67,13 @@ class ScsBus {
 
   // Some half-duplex adapters echo every transmitted byte back to the host.
   // Whether the Waveshare Bus Servo Adapter (A) does is UNCONFIRMED; set this
-  // after the bench check in the README.
+  // after the check in docs/robot/bench-checklist.md.
   void set_tx_echo(bool on) { tx_echo_ = on; }
   void set_reply_timeout_ms(uint32_t ms) { timeout_ms_ = ms; }
 
   // --- always allowed ---
   BusError ping(uint8_t id, uint8_t* error = nullptr);
   BusError read(uint8_t id, uint8_t addr, uint8_t* data, uint8_t n, uint8_t* error = nullptr);
-  BusError read_u8(uint8_t id, uint8_t addr, uint8_t* value);
-  BusError read_u16(uint8_t id, uint8_t addr, uint16_t* value);
   BusError read_feedback(uint8_t id, Feedback* fb);  // position .. temperature in one read
   BusError read_angle_limits(uint8_t id, uint16_t* min_step, uint16_t* max_step);
   BusError read_protection(uint8_t id, Protection* p);
@@ -85,6 +95,12 @@ class ScsBus {
   BusError write(uint8_t id, uint8_t addr, const uint8_t* data, uint8_t n);
 
  private:
+  struct EepromChunk {
+    uint8_t addr;
+    const uint8_t* data;
+    uint8_t n;
+  };
+  BusError write_eeprom(uint8_t id, const EepromChunk* chunks, size_t count, uint8_t lock_id);
   bool write_permitted(uint8_t addr, const uint8_t* data, uint8_t n) const;
   void send(const uint8_t* pkt, size_t n);
   BusError receive(uint8_t id, scs::Reply* reply);

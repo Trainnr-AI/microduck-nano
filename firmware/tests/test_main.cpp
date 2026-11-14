@@ -62,6 +62,12 @@ static ImuSample imu_at(float pitch_deg, float roll_deg, uint32_t t_ms) {
   return s;
 }
 
+// A pose (14 joints) as a full joint vector, the beak at 0.
+static void pose_to_joints(const float pose[kNumPoseJoints], float q[kNumJoints]) {
+  for (int j = 0; j < kNumPoseJoints; ++j) q[j] = pose[j];
+  q[kBeak] = 0.0f;
+}
+
 static void place_servos(FakeBus& bus, const RobotConfig& c, const float pose[kNumPoseJoints]) {
   for (int j = 0; j < kNumJoints; ++j) {
     bus.add(c.joints[j].servo_id);
@@ -396,8 +402,9 @@ static void test_hip_map() {
   CHECK(!leg_allowed(m, q, true));
   // STAND is inside the map. SIT is NOT (toe-in 3 deg with hip pitch 70): the sit path was
   // checked on its own, which is why the filter has a checked-path mode.
-  float stand[kNumJoints] = {0}, sit[kNumJoints] = {0};
-  for (int i = 0; i < kNumPoseJoints; ++i) { stand[i] = kRobotConfig.stand[i]; sit[i] = kRobotConfig.sit[i]; }
+  float stand[kNumJoints], sit[kNumJoints];
+  pose_to_joints(kRobotConfig.stand, stand);
+  pose_to_joints(kRobotConfig.sit, sit);
   CHECK(leg_allowed(m, stand, false) && leg_allowed(m, stand, true));
   CHECK(!leg_allowed(m, sit, false) && !leg_allowed(m, sit, true));
 }
@@ -424,8 +431,9 @@ static void test_filter_hip_map() {
   CHECK(f.setpoint()[kLHipPitch] <= 30.001f);   // at +45 with the toe in nothing is free
   CHECK_NEAR(f.setpoint()[kRHipPitch], -30.0f, 1e-3);
   // In free mode the SIT pose cannot be reached; on the checked path it can.
-  float stand[kNumJoints] = {0}, sit[kNumJoints] = {0};
-  for (int i = 0; i < kNumPoseJoints; ++i) { stand[i] = c.stand[i]; sit[i] = c.sit[i]; }
+  float stand[kNumJoints], sit[kNumJoints];
+  pose_to_joints(c.stand, stand);
+  pose_to_joints(c.sit, sit);
   f.reset(stand);
   run_filter(f, sit, 300, false, &flags);
   CHECK((flags & kFlagHipMapLeft) && (flags & kFlagHipMapRight));
@@ -545,6 +553,11 @@ struct Rig {
     }
   }
   float servo_deg(int j) { return step_to_deg(cfg, j, static_cast<int16_t>(fake.servo[cfg.joints[j].servo_id].position())); }
+  // Every servo at `pose`, then armed: the arm must succeed.
+  void arm_at(const float pose[kNumPoseJoints]) {
+    place_servos(fake, cfg, pose);
+    CHECK(ctl.arm(kArmKey, now, imu()) == Result::kOk);
+  }
 };
 
 static void test_arming_is_refused_by_default() {
@@ -631,8 +644,7 @@ static void test_arm_holds_position() {
 
 static void test_sit_and_stand() {
   Rig r(calibrated_config());
-  place_servos(r.fake, r.cfg, r.cfg.stand);
-  CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kOk);
+  r.arm_at(r.cfg.stand);
   CHECK(r.ctl.status().posture == Posture::kStanding);
   r.run(20);
   // Uphill by more than the limit: refused. Just under: accepted.
@@ -644,8 +656,7 @@ static void test_sit_and_stand() {
   r.imu_valid = true;
   // Head turned away from the keyframe: refused until stand() brings it back.
   float t[kNumJoints];
-  for (int j = 0; j < kNumPoseJoints; ++j) t[j] = r.cfg.stand[j];
-  t[kBeak] = 0.0f;
+  pose_to_joints(r.cfg.stand, t);
   t[kHeadYaw] = 50.0f;
   r.ctl.set_targets(t, r.now);
   r.run(100);
@@ -703,8 +714,7 @@ static void test_sit_and_stand() {
 
 static void test_balance_in_the_loop() {
   Rig r(calibrated_config());
-  place_servos(r.fake, r.cfg, r.cfg.stand);
-  CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kOk);
+  r.arm_at(r.cfg.stand);
   r.run(50);
   const float left0 = r.ctl.setpoint_deg()[kLAnkle], right0 = r.ctl.setpoint_deg()[kRAnkle];
   CHECK_NEAR(left0, r.cfg.stand[kLAnkle], 0.2f);   // the servo's step size
@@ -726,8 +736,7 @@ static void test_faults_switch_torque_off() {
   // Overload: 95 % load for longer than the limit.
   {
     Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kOk);
+    r.arm_at(r.cfg.stand);
     r.fake.servo[r.cfg.joints[kLKnee].servo_id].set_load(950);
     r.run(60);   // 0.6 s: not yet
     CHECK(r.ctl.status().mode == Mode::kArmed);
@@ -746,54 +755,34 @@ static void test_faults_switch_torque_off() {
   // A short load spike does not trip it.
   {
     Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
+    r.arm_at(r.cfg.stand);
     r.fake.servo[4].set_load(-1000);
     r.run(40);
     r.fake.servo[4].set_load(300);
     r.run(200);
     CHECK(r.ctl.status().mode == Mode::kArmed);
   }
+  // The faults that trip within a few ticks: armed at STAND, `setup` breaks something, `ticks` later the fault is
+  // latched and every servo is off. Returns the status for the checks of each case.
+  auto trips = [](void (*setup)(Rig&), int ticks, Fault expected) {
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    setup(r);
+    r.run(ticks);
+    CHECK(r.ctl.status().fault == expected && r.fake.torque_count() == 0);
+    return r.ctl.status();
+  };
   // Over-temperature, under-voltage, the servo's own status byte.
-  {
-    Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
-    r.fake.servo[9].mem[scs::reg::kPresentTemperature] = 66;
-    r.run(20);
-    CHECK(r.ctl.status().fault == Fault::kOverTemp && r.fake.torque_count() == 0);
-  }
-  {
-    Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
-    r.fake.servo[2].mem[scs::reg::kPresentVoltage] = 40;
-    r.run(20);
-    CHECK(r.ctl.status().fault == Fault::kUnderVoltage && r.fake.torque_count() == 0);
-  }
-  {
-    Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
-    r.fake.status_error = scs::kErrOverload;
-    r.run(20);
-    CHECK(r.ctl.status().fault == Fault::kServoStatus && r.fake.torque_count() == 0);
-  }
+  trips([](Rig& r) { r.fake.servo[9].mem[scs::reg::kPresentTemperature] = 66; }, 20, Fault::kOverTemp);
+  trips([](Rig& r) { r.fake.servo[2].mem[scs::reg::kPresentVoltage] = 40; }, 20, Fault::kUnderVoltage);
+  trips([](Rig& r) { r.fake.status_error = scs::kErrOverload; }, 20, Fault::kServoStatus);
   // A servo stops answering.
-  {
-    Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
-    r.fake.servo[11].mute = true;
-    r.run(15 * 6);
-    CHECK(r.ctl.status().fault == Fault::kComm && r.ctl.status().fault_joint == 10);
-    CHECK(r.fake.torque_count() == 0);
-  }
+  const Status mute = trips([](Rig& r) { r.fake.servo[11].mute = true; }, 15 * 6, Fault::kComm);
+  CHECK(mute.fault_joint == 10);
   // Fall: trunk far from the planned pitch, or rolled over.
   {
     Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
+    r.arm_at(r.cfg.stand);
     r.run(20);
     r.pitch = -45.0f;
     r.run(5);
@@ -801,14 +790,7 @@ static void test_faults_switch_torque_off() {
     r.run(15);
     CHECK(r.ctl.status().fault == Fault::kFall && r.fake.torque_count() == 0);
   }
-  {
-    Rig r(calibrated_config());
-    place_servos(r.fake, r.cfg, r.cfg.stand);
-    r.ctl.arm(kArmKey, r.now, r.imu());
-    r.roll = 40.0f;
-    r.run(20);
-    CHECK(r.ctl.status().fault == Fault::kFall && r.fake.torque_count() == 0);
-  }
+  trips([](Rig& r) { r.roll = 40.0f; }, 20, Fault::kFall);
 }
 
 static void test_gyro_in_status() {
@@ -1062,7 +1044,7 @@ static void test_bench_servo() {
   }
   CHECK_NEAR(b.state().setpoint_deg, knee.max_deg, 1e-3);
   CHECK(fake.servo[7].position() == static_cast<uint16_t>(deg_to_step(c, kLKnee, knee.max_deg)));
-  CHECK(b.state().read_ok && b.state().read_ms == now);
+  CHECK(b.state().reading.ok && b.state().reading.ms == now);
   for (const WriteLog& w : fake.writes) CHECK(w.id == 7 || w.id == scs::kBroadcastId);
 
   // Silence for longer than the command timeout: torque off, not hold.
@@ -1109,11 +1091,9 @@ static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
   Rig r(slow);
-  place_servos(r.fake, r.cfg, r.cfg.stand);
-  r.ctl.arm(kArmKey, r.now, r.imu());
+  r.arm_at(r.cfg.stand);
   float t[kNumJoints];
-  for (int j = 0; j < kNumPoseJoints; ++j) t[j] = r.cfg.stand[j];
-  t[kBeak] = 0.0f;
+  pose_to_joints(r.cfg.stand, t);
   t[kNeckPitch] = -60.0f;
   r.ctl.set_targets(t, r.now);
   r.run(20, false);              // 0.2 s: still moving toward the target
