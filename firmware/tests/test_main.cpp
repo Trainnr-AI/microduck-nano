@@ -54,6 +54,9 @@ static ImuSample imu_at(float pitch_deg, float roll_deg, uint32_t t_ms) {
   s.up[2] = sqrtf(fmaxf(0.0f, 1.0f - s.up[0] * s.up[0] - s.up[1] * s.up[1]));
   s.valid = true;
   s.t_ms = t_ms;
+  s.gyro_dps[0] = s.gyro_dps[1] = s.gyro_dps[2] = 0.0f;
+  s.gyro_valid = false;
+  s.gyro_t_ms = 0;
   return s;
 }
 
@@ -806,6 +809,57 @@ static void test_faults_switch_torque_off() {
   }
 }
 
+static void test_gyro_in_status() {
+  // The gyro is turned into the body frame by the mounting matrix and reported only while fresh and calibrated;
+  // otherwise it reads as not measured (zeros with gyro_ok false), never as the last value.
+  RobotConfig c = calibrated_config();
+  const float rot[3][3] = {{0, 0, 1}, {0, 1, 0}, {-1, 0, 0}};  // sensor z = body x, sensor x = body -z
+  memcpy(c.imu.sensor_to_body, rot, sizeof(rot));
+  const float in[3] = {10.0f, 20.0f, 30.0f};
+  float out[3];
+  sensor_to_body(c.imu, in, out);
+  CHECK_NEAR(out[0], 30.0f, 1e-5);
+  CHECK_NEAR(out[1], 20.0f, 1e-5);
+  CHECK_NEAR(out[2], -10.0f, 1e-5);
+
+  Rig r(c, false);  // default build, disarmed: the gyro is telemetry and must work on the bench
+  place_servos(r.fake, r.cfg, r.cfg.stand);
+  auto sample = [&](uint32_t age_ms, bool valid) {
+    ImuSample s = r.imu();
+    for (int i = 0; i < 3; ++i) s.gyro_dps[i] = in[i];
+    s.gyro_valid = valid;
+    s.gyro_t_ms = r.now - age_ms;
+    return s;
+  };
+  r.now += 10;
+  r.ctl.tick(r.now, sample(0, true));
+  Status st = r.ctl.status();
+  CHECK(st.gyro_ok);
+  CHECK_NEAR(st.gyro_dps[0], 30.0f, 1e-5);
+  CHECK_NEAR(st.gyro_dps[1], 20.0f, 1e-5);
+  CHECK_NEAR(st.gyro_dps[2], -10.0f, 1e-5);
+
+  r.now += 10;
+  r.ctl.tick(r.now, sample(r.cfg.imu.stale_ms + 1, true));  // stale
+  st = r.ctl.status();
+  CHECK(!st.gyro_ok && st.gyro_dps[0] == 0.0f && st.gyro_dps[1] == 0.0f && st.gyro_dps[2] == 0.0f);
+
+  r.now += 10;
+  r.ctl.tick(r.now, sample(0, false));  // no gyro report yet
+  CHECK(!r.ctl.status().gyro_ok);
+
+  r.imu_valid = false;  // gravity missing does not hide a fresh gyro: they are separate reports
+  r.now += 10;
+  r.ctl.tick(r.now, sample(0, true));
+  CHECK(r.ctl.status().gyro_ok && !r.ctl.status().imu_ok);
+
+  r.cfg.imu.calibrated = false;  // an uncalibrated mounting means the body frame is unknown
+  r.now += 10;
+  r.ctl.tick(r.now, sample(0, true));
+  CHECK(!r.ctl.status().gyro_ok);
+  CHECK(!r.fake.any_motion_write() && r.fake.torque_count() == 0);
+}
+
 static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
@@ -847,6 +901,7 @@ int main() {
   RUN(test_balance_in_the_loop);
   RUN(test_faults_switch_torque_off);
   RUN(test_command_timeout_holds);
+  RUN(test_gyro_in_status);
   printf("\n%d tests, %d checks, %d failed\n", g_tests, g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

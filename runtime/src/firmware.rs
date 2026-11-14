@@ -9,8 +9,11 @@ use std::io::{Read, Write};
 use crate::bridge::{Bridge, BridgeError};
 use crate::robot::JOINT_NAMES;
 
-/// The firmware's value for "this servo did not answer".
+/// The firmware's value for "not measured" (a servo that did not answer, a gyro that is not reporting).
 const MISSING: i64 = -32768;
+
+/// The firmware protocol this runtime speaks: 3 added the gyro to the state message.
+pub const PROTOCOL: i64 = 3;
 
 const MODES: [&str; 3] = ["DISARMED", "ARMED", "FAULT"];
 const POSTURES: [&str; 6] =
@@ -83,7 +86,7 @@ const RESULTS: [&str; 14] = [
     "facing uphill: sit refused", "busy", "bus error",
 ];
 
-/// Everything a control tick needs, from one reply (firmware protocol 2: `duck_state` and `duck_step`).
+/// Everything a control tick needs, from one reply (firmware protocol 3: `duck_state` and `duck_step`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     /// What the firmware did with the command this reply answers; "ok" for a plain read.
@@ -91,11 +94,18 @@ pub struct State {
     pub status: Status,
     /// Measured joint angles in radians, firmware joint order; `None` where the servo did not answer.
     pub joints: Vec<Option<f64>>,
+    /// Body angular velocity in rad/s about x (forward), y (left), z (up); `None` when the gyro is not measured
+    /// (no IMU, a stale report, or the IMU's mounting not calibrated in `robot.json`).
+    pub angular_velocity: Option<[f64; 3]>,
 }
 
 fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
-    if v.len() != 10 + JOINT_NAMES.len() {
-        return Err(BridgeError::Shape("state reply is not 10 words plus one per joint"));
+    let joints = JOINT_NAMES.len();
+    if v.len() == 10 + joints {
+        return Err(BridgeError::Shape("state reply has no gyro: the firmware speaks protocol 2, this runtime needs 3"));
+    }
+    if v.len() != 10 + joints + 3 {
+        return Err(BridgeError::Shape("state reply is not 10 words, one per joint, then 3 gyro words"));
     }
     let status = Status {
         mode: name(&MODES, field(v, 1)?),
@@ -107,8 +117,14 @@ fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
         roll_deg: field(v, 8)? as f64 / 10.0,
         worst_tick_us: field(v, 9)?,
     };
-    let joints = v.iter().skip(10).map(|&t| (t != MISSING).then(|| (t as f64 / 10.0).to_radians())).collect();
-    Ok(State { result: name(&RESULTS, field(v, 0)?), status, joints })
+    let gyro = v.get(10 + joints..).unwrap_or_default();
+    let angular_velocity = match gyro {
+        &[x, y, z] if !gyro.contains(&MISSING) => Some([x, y, z].map(|w| (w as f64 / 10.0).to_radians())),
+        _ => None,
+    };
+    let joints =
+        v.iter().skip(10).take(joints).map(|&t| (t != MISSING).then(|| (t as f64 / 10.0).to_radians())).collect();
+    Ok(State { result: name(&RESULTS, field(v, 0)?), status, joints, angular_velocity })
 }
 
 /// Read the whole state in one round trip.

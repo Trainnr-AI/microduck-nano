@@ -58,6 +58,20 @@ def validate(r):
         sys.exit("hip map: wrong number of rows")
     if len(r["motion"]["planned_trunk_pitch_deg"]) != 9:
         sys.exit("planned_trunk_pitch_deg must have 9 values")
+    # The gyro's rates are turned into the body frame with this matrix, so it must be a rotation: anything else
+    # would scale or mirror them (gravity is normalised afterwards and would not show the mistake).
+    m = r["imu"]["sensor_to_body"]
+    if len(m) != 3 or any(len(row) != 3 for row in m):
+        sys.exit("imu.sensor_to_body must be 3 x 3")
+    for i in range(3):
+        for k in range(3):
+            dot = sum(m[i][n] * m[k][n] for n in range(3))
+            if abs(dot - (1.0 if i == k else 0.0)) > 1e-3:
+                sys.exit("imu.sensor_to_body must be a rotation: its rows must be orthonormal")
+    det = (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+           + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+    if det < 0:
+        sys.exit("imu.sensor_to_body must be a rotation: its determinant is -1 (a mirror)")
 
 
 def render(r):

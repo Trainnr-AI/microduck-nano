@@ -57,7 +57,7 @@ class Duck:
         return {n: (None if x == -32768 else x / 10) for n, x in zip(JOINTS, self._b.call("duck_joints"))}
 
     def state(self):
-        """Everything a control tick needs in one call (firmware protocol 2)."""
+        """Everything a control tick needs in one call (firmware protocol 3)."""
         v = self._b.call("duck_state")
         return self._state(v)
 
@@ -70,7 +70,9 @@ class Duck:
         return {
             "result": _name(RESULTS, v[0]), "mode": _name(MODES, v[1]), "posture": _name(POSTURES, v[2]),
             "fault": _name(FAULTS, v[3]), "imu_ok": bool(v[6]), "pitch_deg": v[7] / 10, "roll_deg": v[8] / 10,
-            "joints": {n: (None if x == -32768 else x / 10) for n, x in zip(JOINTS, v[10:])},
+            "joints": {n: (None if x == -32768 else x / 10) for n, x in zip(JOINTS, v[10:10 + len(JOINTS)])},
+            # body frame (x forward, y left, z up), deg/s; None when the gyro is not measured
+            "gyro_dps": None if -32768 in v[10 + len(JOINTS):] else [x / 10 for x in v[10 + len(JOINTS):]],
         }
 
     def setpoints(self):

@@ -15,6 +15,9 @@ are powered.
    (needs a network on the board), flash. `duck_info` should report the IMU present. Tilt the IMU by hand and note which
    sensor axis reads "up"; write the `sensor_to_body` matrix in `robot.json` so that a level robot gives pitch 0 / roll 0,
    nose up gives positive pitch and left side up gives positive roll; set `imu.calibrated` true. Confirm in `duck_status`.
+   The matrix must be a rotation (`gen_config.py` refuses a mirror). Then the gyro, from `duck_state`'s last three
+   words (degrees per second x10, body frame): turning the robot to its left reads positive z, nose down positive y,
+   right side down positive x, each near zero at rest.
 4. With a logic analyser or scope on D1: power-cycle the board and record what the pin does during boot. If anything is
    sent, the servo supply must come up only after the board has booted (or the servo UART has to move).
 

@@ -38,11 +38,15 @@ float planned_pitch_deg(const MotionConfig& cfg, float sit_fraction) {
   return cfg.planned_pitch_deg[i] + (cfg.planned_pitch_deg[i + 1] - cfg.planned_pitch_deg[i]) * f;
 }
 
+void sensor_to_body(const ImuConfig& cfg, const float v[3], float out[3]) {
+  for (int r = 0; r < 3; ++r) {
+    out[r] = cfg.sensor_to_body[r][0] * v[0] + cfg.sensor_to_body[r][1] * v[1] + cfg.sensor_to_body[r][2] * v[2];
+  }
+}
+
 Tilt tilt_from_up(const ImuConfig& cfg, const float up[3]) {
   float b[3];
-  for (int r = 0; r < 3; ++r) {
-    b[r] = cfg.sensor_to_body[r][0] * up[0] + cfg.sensor_to_body[r][1] * up[1] + cfg.sensor_to_body[r][2] * up[2];
-  }
+  sensor_to_body(cfg, up, b);
   const float n = sqrt_f(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
   Tilt t = {0.0f, 0.0f};
   if (n < 1e-6f) return t;

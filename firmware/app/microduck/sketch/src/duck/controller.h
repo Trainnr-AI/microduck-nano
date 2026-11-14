@@ -53,9 +53,12 @@ enum class Result : uint8_t {
 };
 
 struct ImuSample {
-  float up[3];     // unit vector away from gravity, sensor frame
+  float up[3];          // unit vector away from gravity, sensor frame
   bool valid;
-  uint32_t t_ms;   // when it was measured
+  uint32_t t_ms;        // when it was measured
+  float gyro_dps[3];    // angular velocity, deg/s, sensor frame (a separate report, with its own age)
+  bool gyro_valid;
+  uint32_t gyro_t_ms;
 };
 
 enum StatusFlag : uint16_t {
@@ -74,6 +77,8 @@ struct Status {
   bool imu_ok;
   float pitch_deg, roll_deg;
   float balance_deg;     // current ankle correction
+  bool gyro_ok;          // calibrated mounting, a gyro sample no older than imu.stale_ms
+  float gyro_dps[3];     // body angular velocity, deg/s, body frame (x forward, y left, z up); 0 unless gyro_ok
 };
 
 class Controller {
@@ -108,6 +113,7 @@ class Controller {
  private:
   void enter_fault();
   bool imu_usable(const ImuSample& imu, uint32_t now_ms) const;
+  bool gyro_usable(const ImuSample& imu, uint32_t now_ms) const;
   void poll_one_servo(uint32_t now_ms);
   bool pose_near(const float q[kNumJoints], const float pose[kNumPoseJoints], float tol, bool legs_only) const;
   float sit_fraction() const;
@@ -133,6 +139,8 @@ class Controller {
   uint16_t flags_ = 0;
   Tilt tilt_ = {0.0f, 0.0f};
   bool imu_ok_ = false;
+  bool gyro_ok_ = false;
+  float gyro_dps_[3] = {0.0f, 0.0f, 0.0f};
   uint32_t last_tick_ms_ = 0;
   bool have_tick_ = false;
   uint32_t last_cmd_ms_ = 0;

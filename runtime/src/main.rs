@@ -28,7 +28,7 @@ usage:
         state      one read per tick (default; sends nothing)
         step       one exchange per tick: the guarded hold-in-place targets go out, the state comes back.
                    The firmware ignores targets unless it is armed.
-        two-reads  status and joints as two calls (firmware protocol 1)
+        two-reads  status and joints as two calls (firmware protocol 1; no gyro)
       With --policy the targets come from the policy (zero command) instead of hold-in-place; the loop runs at the
       policy's rate. A tick on which an input the policy needs was not measured holds instead.
 ";
@@ -130,7 +130,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         "status" => {
             let info = firmware::info(&mut bridge)?;
             let status = firmware::status(&mut bridge)?;
-            println!("firmware protocol {}", info.protocol);
+            println!("firmware protocol {} (this runtime speaks {})", info.protocol, firmware::PROTOCOL);
             println!("  motion build: {}   permanent-memory writes: {}", info.motion_build, info.eeprom_build);
             println!("  joint table ready: {}   IMU present: {}", info.joint_table_ready, info.imu_present);
             println!("  servo port is Serial1: {}", info.servo_uart_is_serial1);
@@ -149,8 +149,8 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 ("duck_info", 6, vec![]),
                 ("duck_status", 10, vec![]),
                 ("duck_joints", 15, vec![]),
-                ("duck_state", 25, vec![]),
-                ("duck_step", 25, zeros()),
+                ("duck_state", 28, vec![]),
+                ("duck_step", 28, zeros()),
                 ("duck_health", 45, vec![]),
             ] {
                 let mut times = Vec::with_capacity(args.count as usize);
@@ -172,6 +172,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             let path = args.robot.as_deref().ok_or("run needs --robot <path to firmware/config/robot.json>")?;
             let robot = Robot::load(path)?;
             let mut policy = load_policy(args, &robot)?;
+            let protocol = firmware::info(&mut bridge)?.protocol;
+            if args.exchange != control::Exchange::TwoReads && protocol < firmware::PROTOCOL {
+                return Err(format!(
+                    "the firmware speaks protocol {protocol}; --exchange state and step need {} (the state message \
+                     with the gyro). Push the app from this repository, or use --exchange two-reads",
+                    firmware::PROTOCOL
+                )
+                .into());
+            }
             let hz = policy.as_ref().map_or(args.hz, |p| p.manifest().control_hz);
             let command = vec![0.0; policy.as_ref().map_or(0, |p| p.manifest().command_size())];
             let period = Duration::from_secs_f64(1.0 / hz);

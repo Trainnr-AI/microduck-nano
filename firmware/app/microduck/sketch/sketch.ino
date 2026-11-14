@@ -33,7 +33,7 @@
 #define DUCK_SERVO_SERIAL_IS_SERIAL1 0
 #endif
 
-#define DUCK_PROTOCOL_VERSION 2
+#define DUCK_PROTOCOL_VERSION 3  // 3: the state message carries the gyro
 
 namespace {
 
@@ -66,7 +66,7 @@ class UartTransport : public duck::Transport {
 UartTransport g_uart;
 duck::ScsBus g_bus(g_uart);
 duck::Controller g_ctl(duck::kRobotConfig, g_bus, DUCK_ENABLE_MOTION != 0);
-duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0};
+duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0, {0.0f, 0.0f, 0.0f}, false, 0};
 bool g_imu_present = false;
 uint32_t g_next_tick_ms = 0;
 uint32_t g_tick_us_max = 0;
@@ -81,7 +81,7 @@ typedef std::array<int32_t, 33> ScanResult;   // [count, id, id, ...]
 typedef std::array<int32_t, 10> ReadResult;   // [bus error, count, byte, ...]
 typedef std::array<float, duck::kNumJoints> Targets;
 typedef std::array<int32_t, duck::kNumJoints> TargetWords;          // degrees x10
-typedef std::array<int32_t, 10 + duck::kNumJoints> StateWords;      // see fill_state()
+typedef std::array<int32_t, 10 + duck::kNumJoints + 3> StateWords;  // see fill_state()
 
 int32_t tenths(float v) { return static_cast<int32_t>(duck::round_to_long(v * 10.0f)); }
 
@@ -119,8 +119,11 @@ JointWords rpc_joints() {
 
 // The whole state a control loop needs, in one reply, so a tick costs one round trip on the link instead of several:
 // [result, mode, posture, fault, fault joint, flags, imu ok, pitch x10, roll x10, worst tick in us,
-//  then one measured joint angle per joint, degrees x10, -32768 where the servo did not answer].
-// `result` is the duck::Result of the command this reply answers (0 for a plain read).
+//  then one measured joint angle per joint, degrees x10, -32768 where the servo did not answer,
+//  then the body angular velocity about x (forward), y (left), z (up), degrees per second x10, -32768 each when the
+//  gyro is not measured (absent, stale, or the IMU's mounting not calibrated)].
+// `result` is the duck::Result of the command this reply answers (0 for a plain read). Protocol 3; protocol 2 was
+// the same without the last three words.
 static StateWords fill_state(int32_t result) {
   const duck::Status s = g_ctl.status();
   StateWords out;
@@ -138,6 +141,7 @@ static StateWords fill_state(int32_t result) {
   for (int j = 0; j < duck::kNumJoints; ++j) {
     out[10 + j] = g_ctl.feedback_valid(j) ? tenths(g_ctl.measured_deg()[j]) : -32768;
   }
+  for (int i = 0; i < 3; ++i) out[10 + duck::kNumJoints + i] = s.gyro_ok ? tenths(s.gyro_dps[i]) : -32768;
   return out;
 }
 
@@ -362,13 +366,17 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
 
-  float up[3];
-  if (imu_poll(up)) {
-    g_imu.up[0] = up[0];
-    g_imu.up[1] = up[1];
-    g_imu.up[2] = up[2];
+  float up[3], gyro[3];
+  const int fresh = imu_poll(up, gyro);
+  if (fresh & kImuFreshUp) {
+    for (int i = 0; i < 3; ++i) g_imu.up[i] = up[i];
     g_imu.valid = true;
     g_imu.t_ms = now;
+  }
+  if (fresh & kImuFreshGyro) {
+    for (int i = 0; i < 3; ++i) g_imu.gyro_dps[i] = gyro[i];
+    g_imu.gyro_valid = true;
+    g_imu.gyro_t_ms = now;
   }
 
   if (static_cast<int32_t>(now - g_next_tick_ms) >= 0) {

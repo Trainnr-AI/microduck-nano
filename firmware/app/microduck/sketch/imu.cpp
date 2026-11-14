@@ -4,7 +4,8 @@
 // Things to confirm on the bench (README, bench checklist):
 //   - the gravity report's sign (assumed: reads about +9.8 on the axis that
 //     points up, like an accelerometer at rest);
-//   - the report rate actually delivered at 100 Hz on a 400 kHz bus.
+//   - the report rate actually delivered at 100 Hz on a 400 kHz bus, with two reports;
+//   - the gyro's sign: right-handed about the sensor's axes, as the datasheet says.
 #include "imu.h"
 
 #include <Arduino.h>
@@ -21,7 +22,8 @@
 static BNO08x g_imu;
 static bool g_started = false;
 
-static bool enable_reports() { return g_imu.enableGravity(DUCK_TICK_MS); }
+// Gravity and the calibrated gyro (bias removed by the sensor), both at the control rate.
+static bool enable_reports() { return g_imu.enableGravity(DUCK_TICK_MS) && g_imu.enableGyro(DUCK_TICK_MS); }
 
 bool imu_begin() {
   Wire1.begin();  // the Qwiic connector is Wire1 on the UNO Q (3.3 V)
@@ -30,20 +32,30 @@ bool imu_begin() {
   return g_started;
 }
 
-bool imu_poll(float up[3]) {
-  if (!g_started) return false;
+int imu_poll(float up[3], float gyro_dps[3]) {
+  if (!g_started) return 0;
   if (g_imu.wasReset()) enable_reports();  // the sensor forgets its reports after a reset
-  bool fresh = false;
-  // Drain what is waiting; keep the newest gravity sample.
-  for (int i = 0; i < 4 && g_imu.getSensorEvent(); ++i) {
-    if (g_imu.getSensorEventID() != SENSOR_REPORTID_GRAVITY) continue;
-    const float x = g_imu.getGravityX(), y = g_imu.getGravityY(), z = g_imu.getGravityZ();
-    const float n = duck::sqrt_f(x * x + y * y + z * z);
-    if (n < 1.0f) continue;  // not a plausible gravity vector (m/s^2)
-    up[0] = x / n;
-    up[1] = y / n;
-    up[2] = z / n;
-    fresh = true;
+  int fresh = 0;
+  // Drain what is waiting; keep the newest sample of each report.
+  for (int i = 0; i < 8 && g_imu.getSensorEvent(); ++i) {
+    const uint8_t id = g_imu.getSensorEventID();
+    if (id == SENSOR_REPORTID_GRAVITY) {
+      const float x = g_imu.getGravityX(), y = g_imu.getGravityY(), z = g_imu.getGravityZ();
+      const float n = duck::sqrt_f(x * x + y * y + z * z);
+      if (n < 1.0f) continue;  // not a plausible gravity vector (m/s^2)
+      up[0] = x / n;
+      up[1] = y / n;
+      up[2] = z / n;
+      fresh |= kImuFreshUp;
+    } else if (id == SENSOR_REPORTID_GYROSCOPE_CALIBRATED) {
+      const float k = 57.2957795f;  // rad/s -> deg/s
+      const float x = g_imu.getGyroX() * k, y = g_imu.getGyroY() * k, z = g_imu.getGyroZ() * k;
+      if (!duck::finitef(x) || !duck::finitef(y) || !duck::finitef(z)) continue;
+      gyro_dps[0] = x;
+      gyro_dps[1] = y;
+      gyro_dps[2] = z;
+      fresh |= kImuFreshGyro;
+    }
   }
   return fresh;
 }
@@ -51,9 +63,10 @@ bool imu_poll(float up[3]) {
 #else  // no IMU in this build
 
 bool imu_begin() { return false; }
-bool imu_poll(float up[3]) {
+int imu_poll(float up[3], float gyro_dps[3]) {
   (void)up;
-  return false;
+  (void)gyro_dps;
+  return 0;
 }
 
 #endif

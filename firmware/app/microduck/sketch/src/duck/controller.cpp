@@ -26,6 +26,10 @@ bool Controller::imu_usable(const ImuSample& imu, uint32_t now_ms) const {
   return cfg_.imu.calibrated && imu.valid && (now_ms - imu.t_ms) <= cfg_.imu.stale_ms;
 }
 
+bool Controller::gyro_usable(const ImuSample& imu, uint32_t now_ms) const {
+  return cfg_.imu.calibrated && imu.gyro_valid && (now_ms - imu.gyro_t_ms) <= cfg_.imu.stale_ms;
+}
+
 bool Controller::pose_near(const float q[kNumJoints], const float pose[kNumPoseJoints], float tol,
                            bool legs_only) const {
   for (int k = 0; k < 10; ++k) {
@@ -233,6 +237,14 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
 
   imu_ok_ = imu_usable(imu, now_ms);
   if (imu_ok_) tilt_ = tilt_from_up(cfg_.imu, imu.up);
+  // Reported for the Linux side's policy only; nothing in the firmware acts on it. A stale gyro reads as
+  // "not measured", never as the last value or zero.
+  gyro_ok_ = gyro_usable(imu, now_ms);
+  if (gyro_ok_) {
+    sensor_to_body(cfg_.imu, imu.gyro_dps, gyro_dps_);
+  } else {
+    gyro_dps_[0] = gyro_dps_[1] = gyro_dps_[2] = 0.0f;
+  }
 
   if (mode_ == Mode::kFault) {
     // Keep saying "torque off" for a while, then once a second.
@@ -355,6 +367,8 @@ Status Controller::status() const {
   s.pitch_deg = tilt_.pitch_deg;
   s.roll_deg = tilt_.roll_deg;
   s.balance_deg = balance_.correction();
+  s.gyro_ok = gyro_ok_;
+  for (int i = 0; i < 3; ++i) s.gyro_dps[i] = gyro_dps_[i];
   return s;
 }
 

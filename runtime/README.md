@@ -50,9 +50,12 @@ terms: `angular_velocity`, `projected_gravity`, `joint_positions`, `joint_veloci
 observation or action size differs from the model's. On a tick where something the policy needs was not measured
 (a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
 
-Two gaps before a real policy can run: the firmware does not report the gyro yet, so a manifest with
-`angular_velocity` is skipped on every tick; and the sign conventions of `projected_gravity` are unchecked against
-both a real IMU and the training simulation.
+`angular_velocity` comes from the gyro in the firmware's state message (protocol 3), in the body frame (x forward,
+y left, z up) after the IMU's mounting matrix in `robot.json`. It is "not measured" until that matrix is calibrated,
+and with `--exchange two-reads`, which has no gyro. `duckd run` refuses `state` and `step` against an older firmware.
+
+The gap before a real policy can run: the sign conventions of `projected_gravity` and `angular_velocity` are unchecked
+against both a real IMU and the training simulation.
 
 ## Run on the board
 
@@ -123,7 +126,7 @@ all 500 ticks for want of joint angles. The policy path through the loop is cove
 
 ## Next
 
-1. The gyro in the firmware's state message, so a policy with `angular_velocity` can run.
-2. A command source (gamepad or network) instead of the zero command.
-3. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
+1. A command source (gamepad or network) instead of the zero command.
+2. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
+3. Check the gravity and gyro sign conventions against the IMU on the bench and against the training simulation.
 4. The hardware receive buffer on the microcontroller's UART, if more than 460800 baud is ever needed.

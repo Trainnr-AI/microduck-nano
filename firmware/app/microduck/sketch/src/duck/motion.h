@@ -38,6 +38,10 @@ struct Tilt {
 // up_sensor: unit vector pointing away from gravity, in the IMU's own frame.
 Tilt tilt_from_up(const ImuConfig& cfg, const float up_sensor[3]);
 
+// A sensor-frame vector (the gyro's rates) turned into the body frame (x forward, y left, z up) by the mounting
+// matrix. Unlike tilt_from_up nothing is normalised, so the matrix must be a rotation (gen_config.py checks it).
+void sensor_to_body(const ImuConfig& cfg, const float v_sensor[3], float v_body[3]);
+
 // ankle correction = gain x dead_zone(low_pass(pitch - planned pitch)).
 // Add the result to the left ankle and subtract it from the right ankle.
 class BalanceLaw {

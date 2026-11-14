@@ -43,25 +43,57 @@ fn ints(v: &[i64]) -> Value {
 /// The firmware as it answers on a bare board: bench-safe build, no servos, no IMU.
 fn bare_board(method: &str) -> Option<Value> {
     match method {
-        "duck_info" => Some(ints(&[1, 0, 0, 0, 0, 1])),
+        "duck_info" => Some(ints(&[3, 0, 0, 0, 0, 1])),
         "duck_status" => Some(ints(&[0, 0, 0, -1, 1024, 0, 0, 0, 0, 2])),
         "duck_joints" => Some(ints(&[-32768; 15])),
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..]].concat())),
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
         // not armed (result 7): the targets are ignored, the state still comes back
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..]].concat())),
+        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
         _ => None,
     }
 }
 
-/// Every servo answering, each joint at 0.5 degrees.
+/// Every servo answering, each joint at 0.5 degrees; IMU ok, level, turning left at 12.5 deg/s and rolling at -3.
 fn standing_robot(method: &str) -> Option<Value> {
     match method {
         "duck_joints" => Some(ints(&[5; 15])),
-        // IMU ok, level
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-30, 0, 125][..]].concat())),
+        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-30, 0, 125][..]].concat())),
         other => bare_board(other),
     }
+}
+
+/// As `standing_robot`, but the gyro is not reporting (stale, or its mounting is not calibrated).
+fn standing_robot_without_gyro(method: &str) -> Option<Value> {
+    match method {
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-32768; 3][..]].concat())),
+        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-32768; 3][..]].concat())),
+        other => standing_robot(other),
+    }
+}
+
+/// The firmware before the gyro: a 25-word state message.
+fn protocol_2_firmware(method: &str) -> Option<Value> {
+    match method {
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
+        other => standing_robot(other),
+    }
+}
+
+#[test]
+fn the_gyro_arrives_in_radians_per_second_or_not_at_all() {
+    let state = firmware::state(&mut fake_router(standing_robot)).expect("state");
+    let w = state.angular_velocity.expect("gyro");
+    let expect = [-3.0f64.to_radians(), 0.0, 12.5f64.to_radians()];
+    assert!(w.iter().zip(expect).all(|(a, b)| (a - b).abs() < 1e-12), "{w:?}");
+    assert_eq!(state.joints.len(), 15);
+    assert!(state.joints.iter().all(|j| j.is_some_and(|r| (r - 0.5f64.to_radians()).abs() < 1e-12)));
+
+    let state = firmware::state(&mut fake_router(standing_robot_without_gyro)).expect("state");
+    assert_eq!(state.angular_velocity, None, "a missing gyro is not a zero");
+
+    let old = firmware::state(&mut fake_router(protocol_2_firmware));
+    assert!(matches!(old, Err(BridgeError::Shape(why)) if why.contains("protocol 2")));
 }
 
 #[test]
@@ -322,10 +354,16 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     assert_eq!(stats.moves, stats.ticks * 4);
     assert!(stats.inference_percentile(0.5).is_some());
 
-    // The firmware does not report a gyro yet, so a policy that needs one is skipped and the loop holds.
+    // A policy that needs the gyro runs when the firmware reports it ...
     let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
     let command = [0.0; 13];
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)));
+    assert_eq!(stats.errors, 0);
+    assert_eq!(stats.policy_ran, stats.ticks);
+
+    // ... and is skipped, holding in place, on a tick when it does not.
+    let mut bridge = fake_router(standing_robot_without_gyro);
     let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)));
     assert_eq!(stats.policy_ran, 0);
     assert_eq!(stats.policy_skipped, stats.ticks);
