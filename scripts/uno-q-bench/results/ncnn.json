@@ -1,0 +1,189 @@
+[
+ {
+  "model": "yolo11n-cls_224",
+  "device": "cpu x4",
+  "load_s": 0.11,
+  "first_ms": 42.3,
+  "median_ms": 25.05,
+  "p95_ms": 26.03,
+  "hz": 39.9,
+  "runs": 198,
+  "temp_c": 64.1
+ },
+ {
+  "model": "yolo11n-cls_224",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 11.75,
+  "first_ms": 285.1,
+  "median_ms": 182.88,
+  "p95_ms": 183.83,
+  "hz": 5.5,
+  "runs": 28,
+  "temp_c": 53.2
+ },
+ {
+  "model": "yolo11n-cls_224",
+  "device": "llvmpipe (LLVM 19.1.7, 128 bits)",
+  "load_s": 3.82,
+  "first_ms": 46908.0,
+  "median_ms": 309.56,
+  "p95_ms": 313.37,
+  "hz": 3.2,
+  "runs": 17,
+  "temp_c": 58.2
+ },
+ {
+  "model": "yolo11n-pose_320",
+  "device": "cpu x4",
+  "load_s": 0.13,
+  "first_ms": 126.1,
+  "median_ms": 87.24,
+  "p95_ms": 92.99,
+  "hz": 11.5,
+  "runs": 57,
+  "temp_c": 68.8
+ },
+ {
+  "model": "yolo11n-pose_320",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 8.45,
+  "first_ms": 817.0,
+  "median_ms": 794.14,
+  "p95_ms": 797.76,
+  "hz": 1.3,
+  "runs": 7,
+  "temp_c": 51.6
+ },
+ {
+  "model": "yolo11n-seg_320",
+  "device": "cpu x4",
+  "load_s": 0.15,
+  "first_ms": 149.1,
+  "median_ms": 107.31,
+  "p95_ms": 110.3,
+  "hz": 9.3,
+  "runs": 47,
+  "temp_c": 67.2
+ },
+ {
+  "model": "yolo11n-seg_320",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 2.54,
+  "first_ms": 717.5,
+  "median_ms": 719.64,
+  "p95_ms": 722.88,
+  "hz": 1.4,
+  "runs": 7,
+  "temp_c": 52.6
+ },
+ {
+  "model": "yolo11n_160",
+  "device": "cpu x4",
+  "load_s": 0.13,
+  "first_ms": 35.9,
+  "median_ms": 27.8,
+  "p95_ms": 28.67,
+  "hz": 36.0,
+  "runs": 175,
+  "temp_c": 67.8
+ },
+ {
+  "model": "yolo11n_160",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 1.69,
+  "first_ms": 184.6,
+  "median_ms": 190.09,
+  "p95_ms": 192.33,
+  "hz": 5.3,
+  "runs": 27,
+  "temp_c": 52.9
+ },
+ {
+  "model": "yolo11n_160",
+  "device": "llvmpipe (LLVM 19.1.7, 128 bits)",
+  "load_s": 4.97,
+  "first_ms": 30300.7,
+  "median_ms": 485.93,
+  "p95_ms": 500.46,
+  "hz": 2.1,
+  "runs": 11,
+  "temp_c": 53.8
+ },
+ {
+  "model": "yolo11n_224",
+  "device": "cpu x4",
+  "load_s": 0.13,
+  "first_ms": 58.9,
+  "median_ms": 42.97,
+  "p95_ms": 50.11,
+  "hz": 23.3,
+  "runs": 113,
+  "temp_c": 67.8
+ },
+ {
+  "model": "yolo11n_224",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 1.76,
+  "first_ms": 305.3,
+  "median_ms": 311.7,
+  "p95_ms": 314.57,
+  "hz": 3.2,
+  "runs": 17,
+  "temp_c": 52.0
+ },
+ {
+  "model": "yolo11n_224",
+  "device": "llvmpipe (LLVM 19.1.7, 128 bits)",
+  "load_s": 5.09,
+  "first_ms": 10526.4,
+  "median_ms": 552.43,
+  "p95_ms": 578.26,
+  "hz": 1.8,
+  "runs": 9,
+  "temp_c": 57.3
+ },
+ {
+  "model": "yolo11n_320",
+  "device": "cpu x4",
+  "load_s": 0.1,
+  "first_ms": 121.9,
+  "median_ms": 80.71,
+  "p95_ms": 85.57,
+  "hz": 12.4,
+  "runs": 62,
+  "temp_c": 68.8
+ },
+ {
+  "model": "yolo11n_320",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 1.77,
+  "first_ms": 587.1,
+  "median_ms": 590.54,
+  "p95_ms": 592.73,
+  "hz": 1.7,
+  "runs": 9,
+  "temp_c": 52.3
+ },
+ {
+  "model": "yolo11n_640",
+  "device": "cpu x4",
+  "load_s": 0.13,
+  "first_ms": 427.1,
+  "median_ms": 324.26,
+  "p95_ms": 329.66,
+  "hz": 3.1,
+  "runs": 16,
+  "temp_c": 66.9
+ },
+ {
+  "model": "yolo11n_640",
+  "device": "Turnip Adreno (TM) 702",
+  "load_s": 1.78,
+  "first_ms": 2203.0,
+  "median_ms": 2173.94,
+  "p95_ms": 2188.54,
+  "hz": 0.5,
+  "runs": 5,
+  "temp_c": 52.0
+ }
+]
