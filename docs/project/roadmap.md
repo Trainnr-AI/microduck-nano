@@ -23,7 +23,7 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 
 ## Next, in order
 
-1. **Fix what the review found**, in the design repository: the head interlock collision, the right-leg hip map,
+1. **Fix what the review found** (deferred on 2026-11-15: the 3D design is left for later), in the design repository: the head interlock collision, the right-leg hip map,
    battery clearances and protection, regulator placement. Then re-run the review.
 2. **One servo on the bench.** Confirm steps per degree, the protection registers and the adapter at 5 V; record
    telemetry (`duckd run --record`) and fit an actuator model for the SCS0009. Nothing trained before this is
