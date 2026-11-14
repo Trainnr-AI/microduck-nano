@@ -212,10 +212,16 @@ Result Controller::sit(uint32_t now_ms, const ImuSample& imu) {
 }
 
 void Controller::poll_one_servo(uint32_t now_ms) {
-  const int j = poll_joint_;
-  poll_joint_ = (poll_joint_ + 1) % kNumJoints;
+  // The next joint that has a servo: on a bench with a few servos assigned, each is read every turn instead of
+  // waiting behind the joints that have none.
+  int j = -1;
+  for (int k = 0; k < kNumJoints && j < 0; ++k) {
+    const int candidate = (poll_joint_ + k) % kNumJoints;
+    if (cfg_.joints[candidate].servo_id != kServoIdUnassigned) j = candidate;
+  }
+  if (j < 0) return;  // no servo assigned at all
+  poll_joint_ = (j + 1) % kNumJoints;
   const uint8_t id = cfg_.joints[j].servo_id;
-  if (id == kServoIdUnassigned) return;
   Feedback fb;
   if (bus_.read_feedback(id, &fb) == BusError::kOk) {
     fb_[j] = fb;

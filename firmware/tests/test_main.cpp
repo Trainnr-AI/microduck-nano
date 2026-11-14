@@ -962,6 +962,26 @@ static void test_status_display() {
   CHECK(px(0, 3) == kLedFull && px(0, 5) == kLedFull && px(2, 4) == kLedFull);
 }
 
+static void test_bench_servo_polled_every_turn() {
+  // A bench with one servo assigned (the rest unassigned, as in the shipped config): disarmed, it is read on every
+  // idle poll (10 Hz), not once per pass over all fifteen joints.
+  RobotConfig c = kRobotConfig;
+  for (int j = 0; j < kNumJoints; ++j) c.joints[j].servo_id = kServoIdUnassigned;
+  c.joints[kLKnee].servo_id = 7;
+  Rig r(c, false);
+  r.fake.add(7);
+  r.run(1);
+  CHECK(r.ctl.feedback_valid(kLKnee));
+  // Two servos: both read within two idle polls.
+  c.joints[kBeak].servo_id = 9;
+  Rig r2(c, false);
+  r2.fake.add(7);
+  r2.fake.add(9);
+  r2.run(11);  // polls at the first tick and 100 ms later
+  CHECK(r2.ctl.feedback_valid(kLKnee) && r2.ctl.feedback_valid(kBeak));
+  CHECK(!r2.fake.any_motion_write() && r2.fake.torque_count() == 0);
+}
+
 static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
@@ -1005,6 +1025,7 @@ int main() {
   RUN(test_command_timeout_holds);
   RUN(test_gyro_in_status);
   RUN(test_status_display);
+  RUN(test_bench_servo_polled_every_turn);
   printf("\n%d tests, %d checks, %d failed\n", g_tests, g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
