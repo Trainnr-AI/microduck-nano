@@ -9,6 +9,7 @@ work, and dated project records.
 |---|---|
 | [build-and-flash.md](robot/build-and-flash.md) | Reaching the Arduino UNO Q, building and flashing the firmware, the wiring it assumes, things that went wrong |
 | [bench-checklist.md](robot/bench-checklist.md) | The first steps with real servos, the IMU and power. None of it has been done yet |
+| [status-lights.md](robot/status-lights.md) | What the board's LED matrix and RGB LEDs say: text, servos, IMU, safety mode, the link, `duckd` |
 
 ## `design/`: how it works
 

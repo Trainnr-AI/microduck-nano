@@ -16,6 +16,7 @@ use crate::bridge::{Bridge, BridgeError};
 use crate::firmware;
 use crate::policy::{Policy, Sensed};
 use crate::robot::Robot;
+use crate::status_led::{Colour, StatusLed};
 
 /// Commands older than this are stale and the guard holds (rigrs `Guard`).
 const SOURCE_TIMEOUT_MS: u64 = 500;
@@ -130,6 +131,9 @@ fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
 
 /// Run the loop for `duration` at `period`. Without a policy the target is "stay where you are"; with one, the
 /// policy's targets (for `command`) go through the guards. Either way nothing moves unless the firmware is armed.
+///
+/// `led` shows each tick: green = holding in place (no policy), blue = the policy produced the targets,
+/// yellow = the policy could not run this tick (an input was missing), red = the exchange with the firmware failed.
 pub fn run<S: Read + Write>(
     bridge: &mut Bridge<S>,
     robot: &Robot,
@@ -137,6 +141,7 @@ pub fn run<S: Read + Write>(
     duration: Duration,
     exchange: Exchange,
     mut policy: Option<(&mut Policy, &[f64])>,
+    led: &mut StatusLed,
 ) -> LoopStats {
     let mut guards = Guards::new(robot, period);
     let mut stats = LoopStats::default();
@@ -153,17 +158,22 @@ pub fn run<S: Read + Write>(
                 // Without a policy (or when it cannot run this tick) the command is: hold every joint where it is.
                 let hold = || measured.iter().map(|m| m.unwrap_or(0.0)).collect::<Vec<f64>>();
                 let wanted = match policy.as_mut() {
-                    None => hold(),
+                    None => {
+                        led.show(Colour::Green);
+                        hold()
+                    }
                     Some((policy, command)) => match policy.act(&sensed, command, period.as_secs_f64()) {
                         Ok(targets) => {
                             stats.policy_ran += 1;
                             stats.inference_us.push(policy.last_inference_us);
+                            led.show(Colour::Blue);
                             targets
                         }
                         Err(why) => {
                             stats.policy_skipped += 1;
                             stats.last_policy_skip = Some(why.to_string());
                             policy.reset();
+                            led.show(Colour::Yellow);
                             hold()
                         }
                     },
@@ -186,6 +196,7 @@ pub fn run<S: Read + Write>(
             Err(e) => {
                 stats.errors += 1;
                 stats.last_error = Some(e.to_string());
+                led.show(Colour::Red);
             }
         }
         stats.round_trip_us.push(u64::try_from(tick_start.elapsed().as_micros()).unwrap_or(u64::MAX));

@@ -87,6 +87,10 @@ class Duck:
         return out
 
     # ---- bench reads: talk to servos but cannot move them ----
+    def say(self, text):
+        """Put text on the board's LED matrix for a few seconds (up to 32 characters; firmware protocol 3)."""
+        return self._b.call("duck_say", str(text))
+
     def ping(self, servo_id):
         return _name(BUS_ERRORS, self._b.call("duck_ping", int(servo_id)))
 

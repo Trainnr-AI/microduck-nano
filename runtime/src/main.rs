@@ -9,6 +9,7 @@ use duck_runtime::control;
 use duck_runtime::firmware;
 use duck_runtime::policy::{Manifest, Policy, Sensed};
 use duck_runtime::robot::Robot;
+use duck_runtime::status_led::StatusLed;
 
 const USAGE: &str = "\
 duckd: Microduck Nano runtime (a dry run at this stage; the firmware it talks to must be armed to move a servo)
@@ -16,6 +17,8 @@ duckd: Microduck Nano runtime (a dry run at this stage; the firmware it talks to
 usage:
   duckd status [--socket PATH]
       Ask the firmware what it is and what state it is in.
+  duckd say TEXT [--socket PATH]
+      Put TEXT on the board's LED matrix for a few seconds (up to 32 characters).
   duckd time [--count 200] [--socket PATH]
       Time single read-only calls to the microcontroller, by reply size, to see what the link costs.
   duckd policy-time --robot robot.json --policy policy.onnx [--count 2000]
@@ -31,6 +34,8 @@ usage:
         two-reads  status and joints as two calls (firmware protocol 1; no gyro)
       With --policy the targets come from the policy (zero command) instead of hold-in-place; the loop runs at the
       policy's rate. A tick on which an input the policy needs was not measured holds instead.
+      The board's LED1 shows each tick: green = holding in place, blue = the policy drove the targets,
+      yellow = the policy could not run (an input was missing), red = the exchange failed; off when duckd exits.
 ";
 
 struct Args {
@@ -42,11 +47,16 @@ struct Args {
     count: u32,
     exchange: control::Exchange,
     policy: Option<String>,
+    /// `duckd say`'s text.
+    text: Option<String>,
 }
 
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
-    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None };
+    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, text: None };
+    if args.command == "say" {
+        args.text = Some(argv.next().ok_or("say needs the text")?);
+    }
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -142,6 +152,12 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             println!("servos answering: {answering}/{}", joints.len());
             Ok(())
         }
+        "say" => {
+            let text = args.text.as_deref().unwrap_or_default();
+            let kept = firmware::say(&mut bridge, text)?;
+            println!("on the matrix: {kept} characters");
+            Ok(())
+        }
         "time" => {
             // Read-only calls with replies of different sizes (values in the reply shown in brackets).
             let zeros = || vec![rmpv::Value::Array(vec![rmpv::Value::from(0); 15])];
@@ -195,6 +211,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(p) = &policy {
                 println!("policy `{}`, zero command", p.manifest().name);
             }
+            let mut led = StatusLed::find();
+            println!("status light (LED1): {}", if led.present() { "yes" } else { "not found" });
+            // Announce on the matrix; an older firmware without duck_say just does not show it.
+            let _ = firmware::say(&mut bridge, if policy.is_some() { "DUCKD POLICY" } else { "DUCKD RUN" });
             let stats = control::run(
                 &mut bridge,
                 &robot,
@@ -202,7 +222,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_secs_f64(args.seconds),
                 args.exchange,
                 policy.as_mut().map(|p| (p, command.as_slice())),
+                &mut led,
             );
+            drop(led); // the light goes out with the loop
+            let _ = firmware::say(&mut bridge, "DUCKD DONE");
             let ms = |us: Option<u64>| us.map_or("-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
             println!("ticks {}   errors {}   missed deadlines {}", stats.ticks, stats.errors, stats.missed_deadlines);
             println!(

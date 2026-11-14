@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "duck/controller.h"
+#include "duck/display.h"
 #include "duck/fmath.h"
 #include "duck/motion.h"
 #include "duck/robot_config.h"
@@ -860,6 +861,107 @@ static void test_gyro_in_status() {
   CHECK(!r.fake.any_motion_write() && r.fake.torque_count() == 0);
 }
 
+static void test_status_display() {
+  DisplayInput in;
+  memset(&in, 0, sizeof(in));
+  in.status.mode = Mode::kDisarmed;
+  in.status.fault_joint = -1;
+  in.ms_since_call = kNever;
+  in.ms_since_command = kNever;
+  in.message = nullptr;
+  in.ms_since_message = kNever;
+  DisplayOutput out;
+  char text[kTextMax];
+  auto px = [&](int row, int col) { return out.matrix[row * kMatrixCols + col]; };
+  auto text_lit = [&]() {
+    int n = 0;
+    for (int i = 0; i < 5 * kMatrixCols; ++i) n += out.matrix[i] != 0;
+    return n;
+  };
+
+  // A bare board: the ticker says so, every servo dot dim, no IMU dots, green flash, link off.
+  display_text(in, text);
+  CHECK(strcmp(text, "SAFE  SV 0/15  NO IMU  NO LINUX") == 0);
+  render_display(in, 1000, &out);
+  CHECK(px(6, 0) == kLedDim && px(6, 12) == kLedDim && px(7, 8) == kLedDim);  // left hip yaw, right ankle, beak
+  CHECK(px(7, 0) == 0 && px(7, 1) == 0 && px(6, 6) == 0);
+  CHECK(px(7, 12) == kLedMid && px(5, 3) == 0);  // the loop's heartbeat, on for the first half of each second
+  CHECK(out.led3 == kRgbGreen && out.led4 == kRgbOff);
+  render_display(in, 1500, &out);
+  CHECK(out.led3 == kRgbOff && px(7, 12) == 0);
+  // The ticker scrolls in from the right after a blank screen.
+  render_display(in, 0, &out);
+  CHECK(text_lit() == 0);
+  render_display(in, kScrollMs * 20, &out);  // 7 columns of text on screen: "SA"
+  CHECK(text_lit() > 0);
+
+  // Servos answering are bright; the IMU present but uncalibrated is dim; the link follows the Linux side.
+  in.joint_answering[kRKnee] = true;
+  in.imu_present = true;
+  in.ms_since_call = 200;
+  render_display(in, 1000, &out);
+  CHECK(px(6, 11) == kLedFull && px(6, 3) == kLedDim);
+  CHECK(px(7, 0) == kLedDim && px(7, 1) == kLedDim);
+  CHECK(out.led4 == kRgbGreen && px(6, 6) == kLedMid);
+  display_text(in, text);
+  CHECK(strcmp(text, "SAFE  SV 1/15  IMU ?  LINUX OK") == 0);
+  in.ms_since_command = 100;
+  render_display(in, 1000, &out);
+  CHECK(out.led4 == kRgbBlue && px(6, 6) == kLedFull);
+  in.ms_since_call = in.ms_since_command = 5000;  // went silent
+  render_display(in, 1000, &out);
+  CHECK(out.led4 == kRgbRed);
+  render_display(in, 1500, &out);
+  CHECK(out.led4 == kRgbOff);
+
+  // Calibrated IMU: both dots bright, the tilt in the ticker.
+  in.status.imu_ok = in.status.gyro_ok = true;
+  in.status.pitch_deg = 3.4f;
+  in.status.roll_deg = -12.6f;
+  render_display(in, 1000, &out);
+  CHECK(px(7, 0) == kLedFull && px(7, 1) == kLedFull);
+  display_text(in, text);
+  CHECK(strcmp(text, "SAFE  SV 1/15  P+3 R-13  NO LINUX") == 0);
+
+  // A short message from Linux stands still, centred; it gives way to the ticker when it is old.
+  in.message = "HI";
+  in.ms_since_message = 0;
+  render_display(in, 1000, &out);
+  // "HI" is 7 columns wide, so "H" is drawn at columns 3..5: 101 / 101 / 111 / 101 / 101
+  CHECK(px(0, 3) == kLedFull && px(0, 4) == 0 && px(0, 5) == kLedFull && px(2, 4) == kLedFull);
+  CHECK(px(0, 2) == 0 && px(0, 0) == 0);
+  in.ms_since_message = kMessageHoldMs + 1;
+  display_text(in, text);
+  CHECK(strncmp(text, "SAFE", 4) == 0);
+
+  // Armed: blue, posture in the ticker. Fault: steady red, the fault in words, and its joint blinking.
+  in.status.mode = Mode::kArmed;
+  in.status.posture = Posture::kStanding;
+  render_display(in, 1500, &out);
+  CHECK(out.led3 == kRgbBlue);
+  display_text(in, text);
+  CHECK(strncmp(text, "ARMED STAND  ", 13) == 0);
+  in.status.mode = Mode::kFault;
+  in.status.fault = Fault::kOverTemp;
+  in.status.fault_joint = kLKnee;
+  in.joint_answering[kLKnee] = true;
+  in.ms_since_message = 0;  // a fault outranks a message
+  display_text(in, text);
+  CHECK(strcmp(text, "FAULT HOT L KNEE") == 0);
+  render_display(in, 1000, &out);
+  CHECK(out.led3 == kRgbRed && px(6, 3) == kLedFull);
+  render_display(in, 1150, &out);
+  CHECK(out.led3 == kRgbRed && px(6, 3) == 0);
+
+  // Every printable character has a glyph or falls back to '?', and lower case draws as upper case.
+  CHECK(text_width("") == 0 && text_width("A") == 3 && text_width("ABC") == 11);
+  in.status.mode = Mode::kDisarmed;
+  in.message = "hi";
+  in.ms_since_message = 0;
+  render_display(in, 1000, &out);
+  CHECK(px(0, 3) == kLedFull && px(0, 5) == kLedFull && px(2, 4) == kLedFull);
+}
+
 static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
@@ -902,6 +1004,7 @@ int main() {
   RUN(test_faults_switch_torque_off);
   RUN(test_command_timeout_holds);
   RUN(test_gyro_in_status);
+  RUN(test_status_display);
   printf("\n%d tests, %d checks, %d failed\n", g_tests, g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

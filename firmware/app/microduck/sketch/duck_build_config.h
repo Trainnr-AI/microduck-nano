@@ -34,5 +34,11 @@
 #define DUCK_BRIDGE_BAUD 115200
 #endif
 
+// 1 = the LED matrix shows text and status (docs/robot/status-lights.md). Its driver runs an interrupt every 10 us;
+//     if the servo bus or the link to Linux ever drops bytes, try 0 first. The RGB LEDs work either way.
+#ifndef DUCK_STATUS_MATRIX
+#define DUCK_STATUS_MATRIX 1
+#endif
+
 // Control loop period.
 #define DUCK_TICK_MS 10

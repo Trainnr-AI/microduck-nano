@@ -10,3 +10,4 @@ pub mod control;
 pub mod firmware;
 pub mod policy;
 pub mod robot;
+pub mod status_led;

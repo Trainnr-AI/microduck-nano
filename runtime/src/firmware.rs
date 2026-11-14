@@ -144,6 +144,17 @@ pub fn step<S: Read + Write>(bridge: &mut Bridge<S>, targets: &[f64]) -> Result<
     parse_state(&bridge.call_ints("duck_step", vec![rmpv::Value::Array(tenths)])?)
 }
 
+/// Put `text` on the board's LED matrix (firmware protocol 3). Up to 32 characters; letters, digits and a few
+/// signs (`+ - / . : ? ! % ( ) = # _ '`), lower case shown as upper case. It stays up for 3 s after the last call
+/// (longer if it scrolls), then the firmware's status ticker returns; a fault always shows instead. An empty string
+/// clears it. Returns how many characters the firmware kept.
+pub fn say<S: Read + Write>(bridge: &mut Bridge<S>, text: &str) -> Result<i64, BridgeError> {
+    match bridge.call("duck_say", vec![rmpv::Value::from(text)])? {
+        rmpv::Value::Integer(n) => n.as_i64().ok_or(BridgeError::Shape("duck_say did not return a count")),
+        _ => Err(BridgeError::Shape("duck_say did not return a count")),
+    }
+}
+
 /// Measured joint angles in radians, in the firmware's joint order. `None` where the servo did not answer.
 pub fn joints<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Vec<Option<f64>>, BridgeError> {
     let v = bridge.call_ints("duck_joints", vec![])?;

@@ -57,6 +57,13 @@ and with `--exchange two-reads`, which has no gyro. `duckd run` refuses `state` 
 The gap before a real policy can run: the sign conventions of `projected_gravity` and `angular_velocity` are unchecked
 against both a real IMU and the training simulation.
 
+## Status light and text
+
+`duckd run` shows what each tick did on the board's Linux-side RGB LED (LED1): green holding in place, blue the
+policy driving, yellow the policy skipped for a missing input, red a failed exchange, off when it exits. It puts
+`DUCKD RUN` (or `DUCKD POLICY`) on the LED matrix as it starts and `DUCKD DONE` when it stops; `duckd say TEXT`
+puts any short text there. The rest of the board's lights belong to the firmware: [status-lights.md](../docs/robot/status-lights.md).
+
 ## Run on the board
 
 The firmware app must be running (see [build-and-flash.md](../docs/robot/build-and-flash.md)).
@@ -105,6 +112,10 @@ the same board:
 | 230400 | 3.8 ms | 6.9 ms | 8.7 ms | works |
 | **460800** | 2.8 ms | 4.3 ms | 6.4 ms | works |
 | 921600, 1000000, 2000000 | | | | no replies; the router logs garbled packets |
+
+With the firmware's LED matrix running (protocol 3, 28-word state; measured 2026-11-15): `duck_info` 2.1 ms,
+`duck_state` 4.1 ms, `duck_step` 5.7 ms median over 500 calls each; `duckd run --exchange step` 1,000 ticks at 50 Hz
+and 2,000 at 100 Hz, no errors, no missed deadlines, a tick's exchange 3.9 ms median.
 
 At 460800 the loop ran 9,000 ticks (30 s each at 50 and 100 Hz, as one read and as one exchange) with no errors, no
 missed deadlines and no router errors; a tick's exchange took about 5 ms. That leaves 15 ms of a 50 Hz tick for the

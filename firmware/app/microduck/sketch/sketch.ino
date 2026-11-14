@@ -14,10 +14,15 @@
 #include <Arduino_RouterBridge.h>
 
 #include <array>
+#include <string.h>
 
 #include "duck_build_config.h"
+#if DUCK_STATUS_MATRIX
+#include <Arduino_LED_Matrix.h>
+#endif
 #include "imu.h"
 #include "src/duck/controller.h"
+#include "src/duck/display.h"
 #include "src/duck/fmath.h"
 #include "src/duck/robot_config_data.h"
 
@@ -71,6 +76,58 @@ bool g_imu_present = false;
 uint32_t g_next_tick_ms = 0;
 uint32_t g_tick_us_max = 0;
 
+// The board's LEDs as a status display (src/duck/display.h, docs/robot/status-lights.md).
+#if DUCK_STATUS_MATRIX
+Arduino_LED_Matrix g_matrix;
+#endif
+uint8_t g_frame[duck::kMatrixRows * duck::kMatrixCols];
+uint8_t g_led3 = 0xFF, g_led4 = 0xFF;  // what the RGB LEDs show now; 0xFF = not yet written
+// When the Linux side last called a function, and last sent a command; kNever until it does.
+uint32_t g_last_call_ms = duck::kNever;
+uint32_t g_last_command_ms = duck::kNever;
+// Text from the Linux side for the matrix (duck_say), and when it arrived.
+char g_message[duck::kMessageMax + 1] = "";
+uint32_t g_message_ms = duck::kNever;
+
+void note_call() { g_last_call_ms = millis(); }
+void note_command() { g_last_call_ms = g_last_command_ms = millis(); }
+
+uint32_t ms_since(uint32_t then, uint32_t now) { return then == duck::kNever ? duck::kNever : now - then; }
+
+// The RGB LEDs are wired active low.
+void write_rgb(uint8_t colour, int pin_r, int pin_g, int pin_b) {
+  digitalWrite(pin_r, (colour & duck::kRgbRed) ? LOW : HIGH);
+  digitalWrite(pin_g, (colour & duck::kRgbGreen) ? LOW : HIGH);
+  digitalWrite(pin_b, (colour & duck::kRgbBlue) ? LOW : HIGH);
+}
+
+void update_display(uint32_t now) {
+  duck::DisplayInput in;
+  in.status = g_ctl.status();
+  in.imu_present = g_imu_present;
+  for (int j = 0; j < duck::kNumJoints; ++j) in.joint_answering[j] = g_ctl.feedback_valid(j);
+  in.ms_since_call = ms_since(g_last_call_ms, now);
+  in.ms_since_command = ms_since(g_last_command_ms, now);
+  in.message = g_message;
+  in.ms_since_message = ms_since(g_message_ms, now);
+  duck::DisplayOutput out;
+  duck::render_display(in, now, &out);
+  if (memcmp(out.matrix, g_frame, sizeof(g_frame)) != 0) {
+    memcpy(g_frame, out.matrix, sizeof(g_frame));
+#if DUCK_STATUS_MATRIX
+    g_matrix.draw(g_frame);
+#endif
+  }
+  if (out.led3 != g_led3) {
+    g_led3 = out.led3;
+    write_rgb(g_led3, LED3_R, LED3_G, LED3_B);
+  }
+  if (out.led4 != g_led4) {
+    g_led4 = out.led4;
+    write_rgb(g_led4, LED4_R, LED4_G, LED4_B);
+  }
+}
+
 // Fixed-size arrays only: on older UNO Q cores a sketch cannot link the parts
 // of the C++ library that std::vector's size checks pull in.
 typedef std::array<int32_t, 6> Info;
@@ -91,6 +148,7 @@ int32_t tenths(float v) { return static_cast<int32_t>(duck::round_to_long(v * 10
 
 // [protocol version, motion build, eeprom build, joint table ready, imu present, servo UART is Serial1]
 Info rpc_info() {
+  note_call();
   Info out = {{DUCK_PROTOCOL_VERSION, DUCK_ENABLE_MOTION, DUCK_ENABLE_EEPROM_WRITE,
                duck::config_ready_for_motion(duck::kRobotConfig) ? 1 : 0, g_imu_present ? 1 : 0,
                DUCK_SERVO_SERIAL_IS_SERIAL1}};
@@ -99,6 +157,7 @@ Info rpc_info() {
 
 // [mode, posture, fault, fault joint, flags, imu ok, pitch x10, roll x10, balance x10, worst tick in us]
 StatusWords rpc_status() {
+  note_call();
   const duck::Status s = g_ctl.status();
   StatusWords out = {{static_cast<int32_t>(s.mode), static_cast<int32_t>(s.posture),
                       static_cast<int32_t>(s.fault), s.fault_joint, s.flags, s.imu_ok ? 1 : 0,
@@ -110,6 +169,7 @@ StatusWords rpc_status() {
 
 // Measured joint angles, degrees x10; -32768 where the servo did not answer.
 JointWords rpc_joints() {
+  note_call();
   JointWords out;
   for (int j = 0; j < duck::kNumJoints; ++j) {
     out[j] = g_ctl.feedback_valid(j) ? tenths(g_ctl.measured_deg()[j]) : -32768;
@@ -145,10 +205,14 @@ static StateWords fill_state(int32_t result) {
   return out;
 }
 
-StateWords rpc_state() { return fill_state(0); }
+StateWords rpc_state() {
+  note_call();
+  return fill_state(0);
+}
 
 // Commanded joint angles after the safety layer, degrees x10.
 JointWords rpc_setpoints() {
+  note_call();
   JointWords out;
   for (int j = 0; j < duck::kNumJoints; ++j) out[j] = tenths(g_ctl.setpoint_deg()[j]);
   return out;
@@ -156,6 +220,7 @@ JointWords rpc_setpoints() {
 
 // Per joint: load (0.1 %, signed), voltage (0.1 V), temperature (deg C); 45 numbers.
 HealthWords rpc_health() {
+  note_call();
   HealthWords out;
   for (int j = 0; j < duck::kNumJoints; ++j) {
     const duck::Feedback& fb = g_ctl.feedback(j);
@@ -171,6 +236,7 @@ HealthWords rpc_health() {
 
 // 0 = the servo answered; otherwise a BusError code (1 = no reply).
 int32_t rpc_ping(int32_t id) {
+  note_call();
   if (id < 0 || id > 253) return static_cast<int32_t>(duck::BusError::kBadArg);
   if (g_ctl.status().mode == duck::Mode::kArmed) return static_cast<int32_t>(duck::BusError::kGated);
   return static_cast<int32_t>(g_bus.ping(static_cast<uint8_t>(id)));
@@ -179,6 +245,7 @@ int32_t rpc_ping(int32_t id) {
 // [count, id, id, ...]: IDs that answer a ping in first..last (at most 32 per
 // call: a silent ID costs a timeout).
 ScanResult rpc_scan(int32_t first, int32_t last) {
+  note_call();
   ScanResult found;
   found.fill(0);
   if (g_ctl.status().mode == duck::Mode::kArmed) return found;  // not while the control loop owns the bus
@@ -193,6 +260,7 @@ ScanResult rpc_scan(int32_t first, int32_t last) {
 
 // [bus error, count, byte, byte, ...] - raw register read, up to 8 bytes.
 ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
+  note_call();
   ReadResult out;
   out.fill(0);
   uint8_t data[8];
@@ -214,8 +282,25 @@ ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
   return out;
 }
 
+// Text for the LED matrix: up to 32 characters, letters, digits and + - / . : ? ! % ( ) = # _ '. It stays up for
+// 3 s after it was last sent (two passes if it scrolls), then the status ticker returns; send it again to keep it.
+// A fault always shows instead. An empty string clears it. Returns how many characters were kept.
+int32_t rpc_say(String text) {
+  note_call();
+  int n = 0;
+  for (unsigned i = 0; i < text.length() && n < duck::kMessageMax; ++i) {
+    char c = text[i];
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    if (c >= 32 && c <= 95) g_message[n++] = c;
+  }
+  g_message[n] = '\0';
+  g_message_ms = n ? millis() : duck::kNever;
+  return n;
+}
+
 // For adapters that echo transmitted bytes (bench checklist).
 bool rpc_set_echo(bool on) {
+  note_call();
   g_bus.set_tx_echo(on);
   return on;
 }
@@ -224,25 +309,36 @@ bool rpc_set_echo(bool on) {
 // All return a duck::Result code (0 = ok).
 
 int32_t rpc_heartbeat() {
+  note_command();
   g_ctl.heartbeat(millis());
   return static_cast<int32_t>(g_ctl.status().mode);
 }
 
-int32_t rpc_arm(uint32_t key) { return static_cast<int32_t>(g_ctl.arm(key, millis(), g_imu)); }
+int32_t rpc_arm(uint32_t key) {
+  note_command();
+  return static_cast<int32_t>(g_ctl.arm(key, millis(), g_imu)); }
 
 int32_t rpc_disarm() {
+  note_command();
   g_ctl.disarm();
   return 0;
 }
 
-int32_t rpc_clear_fault() { return static_cast<int32_t>(g_ctl.clear_fault()); }
+int32_t rpc_clear_fault() {
+  note_command();
+  return static_cast<int32_t>(g_ctl.clear_fault()); }
 
-int32_t rpc_stand(bool supported) { return static_cast<int32_t>(g_ctl.stand(supported, millis())); }
+int32_t rpc_stand(bool supported) {
+  note_command();
+  return static_cast<int32_t>(g_ctl.stand(supported, millis())); }
 
-int32_t rpc_sit() { return static_cast<int32_t>(g_ctl.sit(millis(), g_imu)); }
+int32_t rpc_sit() {
+  note_command();
+  return static_cast<int32_t>(g_ctl.sit(millis(), g_imu)); }
 
 // 15 joint targets in degrees, joint order as in config/robot.json.
 int32_t rpc_set_targets(Targets deg) {
+  note_command();
   return static_cast<int32_t>(g_ctl.set_targets(deg.data(), millis()));
 }
 
@@ -250,12 +346,14 @@ int32_t rpc_set_targets(Targets deg) {
 // on the wire), answered with the state. The targets take exactly the path duck_set_targets takes: through the
 // safety layer, and ignored unless the firmware is armed.
 StateWords rpc_step(TargetWords deg10) {
+  note_command();
   float deg[duck::kNumJoints];
   for (int j = 0; j < duck::kNumJoints; ++j) deg[j] = static_cast<float>(deg10[j]) * 0.1f;
   return fill_state(static_cast<int32_t>(g_ctl.set_targets(deg, millis())));
 }
 
 int32_t rpc_set_head(float neck_pitch, float head_pitch, float head_yaw, float head_roll, float beak) {
+  note_command();
   return static_cast<int32_t>(g_ctl.set_head(neck_pitch, head_pitch, head_yaw, head_roll, beak, millis()));
 }
 
@@ -270,6 +368,7 @@ static bool provisioning_ok(uint32_t key) {
 // Writes one joint's angle limits (from the joint table) into its servo and reads them back.
 // [result, min step read back, max step read back]
 std::array<int32_t, 3> rpc_write_limits(uint32_t key, int32_t joint) {
+  note_command();
   std::array<int32_t, 3> out = {{255, -1, -1}};
   if (!provisioning_ok(key) || joint < 0 || joint >= duck::kNumJoints) return out;
   const duck::RobotConfig& c = duck::kRobotConfig;
@@ -292,6 +391,7 @@ std::array<int32_t, 3> rpc_write_limits(uint32_t key, int32_t joint) {
 // Writes the protection settings from config/robot.json into one servo and reads them back.
 // [result, max temperature, unload condition, holding torque, protection time, overload torque]
 std::array<int32_t, 6> rpc_write_protection(uint32_t key, int32_t id) {
+  note_command();
   std::array<int32_t, 6> out = {{255, -1, -1, -1, -1, -1}};
   if (!provisioning_ok(key) || id < 0 || id > 253) return out;
   const duck::ProtectionConfig& pc = duck::kRobotConfig.protection;
@@ -317,6 +417,7 @@ std::array<int32_t, 6> rpc_write_protection(uint32_t key, int32_t id) {
 
 // Changes a servo's ID. Have ONLY that servo on the bus.
 int32_t rpc_set_id(uint32_t key, int32_t old_id, int32_t new_id) {
+  note_command();
   if (!provisioning_ok(key) || old_id < 0 || old_id > 253 || new_id < 0 || new_id > 253) return 255;
   g_bus.allow_eeprom(true);
   const duck::BusError e = g_bus.write_id(static_cast<uint8_t>(old_id), static_cast<uint8_t>(new_id));
@@ -328,8 +429,16 @@ int32_t rpc_set_id(uint32_t key, int32_t old_id, int32_t new_id) {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);  // off (the LED is active low)
+  const int rgb_pins[6] = {LED3_R, LED3_G, LED3_B, LED4_R, LED4_G, LED4_B};
+  for (int pin : rgb_pins) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);  // off (active low)
+  }
+#if DUCK_STATUS_MATRIX
+  g_matrix.begin();
+  g_matrix.setGrayscaleBits(3);  // grey levels 0..7; set it: the boot animation leaves the driver at 8 bits
+#endif
+  memset(g_frame, 0xFF, sizeof(g_frame));  // differs from any real frame, so the first one is drawn
 
   DUCK_SERVO_SERIAL.begin(duck::kRobotConfig.servo.baud);
   g_imu_present = imu_begin();
@@ -346,6 +455,7 @@ void setup() {
   Bridge.provide_safe("duck_scan", rpc_scan);
   Bridge.provide_safe("duck_read", rpc_read);
   Bridge.provide_safe("duck_set_echo", rpc_set_echo);
+  Bridge.provide_safe("duck_say", rpc_say);
   Bridge.provide_safe("duck_heartbeat", rpc_heartbeat);
   Bridge.provide_safe("duck_arm", rpc_arm);
   Bridge.provide_safe("duck_disarm", rpc_disarm);
@@ -384,19 +494,8 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_tick_ms) > 5 * DUCK_TICK_MS) g_next_tick_ms = now + DUCK_TICK_MS;
     const uint32_t t0 = micros();
     g_ctl.tick(now, g_imu);
+    update_display(now);  // counted in the worst tick: the display must not cost the control loop
     const uint32_t dt = micros() - t0;
     if (dt > g_tick_us_max) g_tick_us_max = dt;
-
-    // LED: armed = on, fault = fast blink, disarmed = short flash every second.
-    const duck::Mode mode = g_ctl.status().mode;
-    bool led_on;
-    if (mode == duck::Mode::kArmed) {
-      led_on = true;
-    } else if (mode == duck::Mode::kFault) {
-      led_on = (now / 100) % 2 == 0;
-    } else {
-      led_on = (now % 1000) < 50;
-    }
-    digitalWrite(LED_BUILTIN, led_on ? LOW : HIGH);
   }
 }

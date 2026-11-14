@@ -90,6 +90,7 @@ Call them from Python with `duck_client.Duck(Bridge)`, or directly: `Bridge.call
 | `duck_health` | 15 x (load 0.1 %, voltage 0.1 V, temperature degC) | |
 | `duck_ping(id)`, `duck_scan(first, last)`, `duck_read(id, addr, n)` | bus result / IDs found / register bytes | read-only bench tools; refused while armed |
 | `duck_set_echo(on)` | | for an adapter that echoes transmitted bytes |
+| `duck_say(text)` | characters kept | protocol 3. Text for the LED matrix, up to 32 characters; shown for 3 s after the last call (two passes if it scrolls), a fault always wins. See [status-lights.md](../robot/status-lights.md) |
 | `duck_heartbeat` | mode | send at 5 Hz or faster while commanding |
 | `duck_arm(key)`, `duck_disarm`, `duck_clear_fault` | result code | key = `0xD0C5A4B3` |
 | `duck_stand(supported)`, `duck_sit` | result code | `supported = true`: robot held off the floor, balance and fall detection off during the move |

@@ -4,7 +4,7 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 
 ## Works today
 
-- **Firmware on a bare Arduino UNO Q.** Builds, passes 18 host tests, runs on the board on both the shipped and the
+- **Firmware on a bare Arduino UNO Q.** Builds, passes 19 host tests, runs on the board on both the shipped and the
   updated board software. The Linux side and the microcontroller talk; arming is refused. No servo has been driven.
 - **Runtime in Rust on rigrs** ([`runtime/`](../../runtime/)). Reads the firmware's state through the board's router
   and runs a dry-run control loop with rigrs guards. Measured on the board: a tick's exchange with the microcontroller took 18 ms
@@ -30,7 +30,7 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
    trustworthy.
 3. **Feed the policy runner.** The Rust runtime can load a policy, check it against the robot and run it in the
    loop (0.48 ms per inference on the board; about 7 ms per tick with the exchange). The gyro is in the
-   firmware's state message (protocol 3, not yet on the board); it still needs a command source and above all a
+   firmware's state message (protocol 3, running on the board with no IMU attached); it still needs a command source and above all a
    trained policy. The microcontroller firmware stays C++ until the robot walks.
 4. **Tolerance coupon, one leg, then a full print.**
 5. **Train walking** in trainnr on the fitted actuator model, with backlash modelled; evaluate with pushes and delays;

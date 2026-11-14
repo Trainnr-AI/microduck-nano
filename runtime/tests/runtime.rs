@@ -12,6 +12,7 @@ use duck_runtime::control::{self, ChainOutcome, Exchange, Guards};
 use duck_runtime::firmware;
 use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Sensed};
 use duck_runtime::robot::{Robot, JOINT_NAMES};
+use duck_runtime::status_led::{Colour, StatusLed};
 use rmpv::Value;
 
 const ROBOT_JSON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../firmware/config/robot.json");
@@ -46,6 +47,7 @@ fn bare_board(method: &str) -> Option<Value> {
         "duck_info" => Some(ints(&[3, 0, 0, 0, 0, 1])),
         "duck_status" => Some(ints(&[0, 0, 0, -1, 1024, 0, 0, 0, 0, 2])),
         "duck_joints" => Some(ints(&[-32768; 15])),
+        "duck_say" => Some(Value::from(5)),
         "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
         // not armed (result 7): the targets are ignored, the state still comes back
         "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
@@ -193,7 +195,7 @@ fn the_guard_holds_when_commands_go_stale_and_when_a_servo_is_silent() {
 fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
     let mut bridge = fake_router(standing_robot);
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None);
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None, &mut StatusLed::none());
     assert!(stats.ticks >= 25 && stats.ticks <= 32, "about 30 ticks in 300 ms at 100 Hz, got {}", stats.ticks);
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.unmeasured_chain_ticks, 0);
@@ -201,7 +203,7 @@ fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     assert!(stats.percentile(0.5).is_some());
 
     let mut bare = fake_router(bare_board);
-    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State, None);
+    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State, None, &mut StatusLed::none());
     assert_eq!(stats.moves, 0, "with no servo answering nothing is authorised");
     assert_eq!(stats.unmeasured_chain_ticks, stats.ticks * 4);
 }
@@ -225,7 +227,7 @@ fn one_exchange_per_tick_reads_state_and_reports_what_the_firmware_did_with_targ
     assert!(firmware::step(&mut bridge, &[0.0; 14]).is_err());
 
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None);
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None, &mut StatusLed::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.moves, stats.ticks * 4);
 }
@@ -347,7 +349,7 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     let mut policy = Policy::load(TINY_ONNX, manifest(no_gyro), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
     let command = [0.0; 16];
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)));
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)), &mut StatusLed::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
     assert_eq!(stats.policy_skipped, 0);
@@ -358,15 +360,72 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
     let command = [0.0; 13];
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)));
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)), &mut StatusLed::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
 
     // ... and is skipped, holding in place, on a tick when it does not.
     let mut bridge = fake_router(standing_robot_without_gyro);
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)));
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)), &mut StatusLed::none());
     assert_eq!(stats.policy_ran, 0);
     assert_eq!(stats.policy_skipped, stats.ticks);
     assert!(stats.last_policy_skip.as_deref().unwrap_or("").contains("angular velocity"));
     assert_eq!(stats.moves, stats.ticks * 4, "holding in place is still authorised");
+}
+
+// ---------------------------------------------------------------- status light
+
+/// A stand-in for `/sys/class/leds` with LED1 as this board names it.
+fn fake_leds(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("duck-leds-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for colour in ["red", "green", "blue"] {
+        let led = dir.join(format!("unoq:user-{colour}1"));
+        std::fs::create_dir_all(&led).expect("led dir");
+        std::fs::write(led.join("brightness"), "0").expect("brightness");
+        std::fs::write(led.join("trigger"), "[none] heartbeat").expect("trigger");
+    }
+    dir
+}
+
+fn lit(dir: &std::path::Path) -> [bool; 3] {
+    ["red", "green", "blue"].map(|c| std::fs::read_to_string(dir.join(format!("unoq:user-{c}1/brightness"))).expect("read").trim() == "1")
+}
+
+#[test]
+fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let leds = fake_leds("loop");
+    {
+        let mut led = StatusLed::find_in(&leds);
+        assert!(led.present());
+        // holding in place, no policy: green
+        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, None, &mut led);
+        assert_eq!(lit(&leds), [false, true, false]);
+        // a policy that needs the gyro, which is not reporting: yellow
+        let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
+        let command = [0.0; 13];
+        control::run(&mut fake_router(standing_robot_without_gyro), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut led);
+        assert_eq!(lit(&leds), [true, true, false]);
+        // the policy running: blue
+        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut led);
+        assert_eq!(lit(&leds), [false, false, true]);
+        // the firmware not answering: red
+        control::run(&mut fake_router(|_| None), &robot, Duration::from_millis(10), Duration::from_millis(30), Exchange::State, None, &mut led);
+        assert_eq!(lit(&leds), [true, false, false]);
+        led.show(Colour::White);
+        assert_eq!(lit(&leds), [true, true, true]);
+    }
+    assert_eq!(lit(&leds), [false, false, false], "dropped: off");
+    assert_eq!(std::fs::read_to_string(leds.join("unoq:user-red1/trigger")).expect("trigger"), "none");
+    let _ = std::fs::remove_dir_all(&leds);
+    // a machine without the LED: nothing happens, nothing fails
+    let mut absent = StatusLed::find_in(std::path::Path::new("/nonexistent"));
+    assert!(!absent.present());
+    absent.show(Colour::Red);
+}
+
+#[test]
+fn text_for_the_matrix_reaches_the_firmware() {
+    assert_eq!(firmware::say(&mut fake_router(bare_board), "hello").expect("say"), 5);
 }
