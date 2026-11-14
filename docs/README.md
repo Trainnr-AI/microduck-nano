@@ -22,6 +22,7 @@ These describe the state on their date and are expected to go stale.
 
 | Page | What |
 |---|---|
+| [handoff-2026-11-15.md](project/handoff-2026-11-15.md) | For whoever continues on another machine: the test board's state, what is not in the repository, decisions, next steps |
 | [roadmap.md](project/roadmap.md) | What works today, what is designed, what comes next |
 | [design-review-2026-11-14.md](project/design-review-2026-11-14.md) | Independent review of the mechanical design: PASS / FAIL per check, safety findings |
 | [uno-q-compute.md](project/uno-q-compute.md) | What the UNO Q can run: policies, vision, language models, CPU against GPU |

@@ -7,6 +7,9 @@ Open-source build of Microduck Nano, a new smaller variant derived from the Micr
 
 Licences: Apache-2.0 for code, configs and docs (`LICENSE`); CC BY-NC-SA 4.0 for hardware files and meshes (`LICENSE-MODELS.md`).
 
+Continuing from another machine or session: read `docs/project/handoff-2026-11-15.md` first. It records the test
+board's state and what is not in the repository.
+
 ## Layout
 
 Modelled on Pollen Robotics' Microduck repositories.
