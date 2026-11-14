@@ -23,10 +23,10 @@ usage:
       Put TEXT on the board's LED matrix for a few seconds (up to 32 characters; the words are joined).
   duckd time [--count 200] [--socket PATH]
       Time single read-only calls to the microcontroller, by reply size, to see what the link costs.
-  duckd policy-time --robot robot.json --policy policy.onnx [--count 2000]
-      Load a policy (its manifest is the .json beside it), check it against the robot, and time inference alone
+  duckd policy-time --robot robot.json --policy DEPLOYMENT [--count 2000]
+      Load a policy (a trainnr deployment: its folder or deploy.json), check it against the robot, and time inference alone
       on made-up observations. Needs no firmware.
-  duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy policy.onnx]
+  duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy DEPLOYMENT]
             [--record FILE.mcap] [--socket PATH]
       Dry-run the control loop: read state every tick, pass a hold-in-place target through the rigrs guards,
       and report round-trip time to the microcontroller and missed deadlines.
@@ -210,8 +210,8 @@ fn bench_command(args: &Args, bridge: &mut Bridge<std::os::unix::net::UnixStream
 
 fn load_policy(args: &Args, robot: &Robot) -> Result<Option<Policy>, Box<dyn std::error::Error>> {
     let Some(path) = args.policy.as_deref() else { return Ok(None) };
-    let manifest = Manifest::load(std::path::Path::new(path).with_extension("json"))?;
-    Ok(Some(Policy::load(path, manifest, robot)?))
+    let manifest = Manifest::load(path)?;
+    Ok(Some(Policy::load(manifest, robot)?))
 }
 
 fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {

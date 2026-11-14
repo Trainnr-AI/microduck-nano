@@ -30,7 +30,8 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
    trustworthy. A bench build (`DUCK_BENCH_MOTION 1`, off by default) and `duckd bench`
    move and record one servo on its own; untested with a servo. What stands in the way: trainnr has no method that
    fits a servo model from a recording ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)).
-3. **Feed the policy runner.** The Rust runtime can load a policy, check it against the robot and run it in the
+3. **Feed the policy runner.** It reads trainnr's exports (`trainnr-deploy/1`) as they are; the pipeline from
+   trainnr to `duckd` is checked end to end on Pollen's microduck ([sim-to-real.md](../design/sim-to-real.md)). The Rust runtime can load a policy, check it against the robot and run it in the
    loop (0.48 ms per inference on the board; about 7 ms per tick with the exchange). The gyro is in the
    firmware's state message (protocol 3, running on the board with no IMU attached); it still needs a command source and above all a
    trained policy. The microcontroller firmware stays C++ until the robot walks.

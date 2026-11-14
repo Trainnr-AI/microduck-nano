@@ -41,13 +41,18 @@ The binary is about 18 MB, nearly all of it the inference library.
 
 ## Policies
 
-A policy is an ONNX file with a JSON manifest of the same name beside it
-([example](tests/data/tiny_policy.json)). The manifest names the joints the outputs drive, the default pose an
-all-zero action means, the action scale and clip, the control rate, and the observation as an ordered list of
-terms: `angular_velocity`, `projected_gravity`, `joint_positions`, `joint_velocities`, `last_action`, `command`.
+A policy is what trainnr's `export_deployment` writes: a folder with `policy.onnx` and `deploy.json` (schema
+`trainnr-deploy/1`). `duckd run --policy FOLDER` and `duckd policy-time --policy FOLDER` read it as trainnr wrote
+it ([an example manifest](tests/data/trainnr_export_example.json)): the joints in policy order, the default pose, the
+action as `default_pos + offset + scale * action`, the control rate, and the observation terms in order with their
+clip and scale. The terms this robot can feed are `base_ang_vel` (the gyro), `projected_gravity`, `joint_pos_rel`,
+`joint_vel_rel`, `last_action` and `command`: exactly what trainnr's walk trains on (51 values for a walk).
 
-`duckd` refuses a policy whose joints are not the robot's, whose default pose is outside the joint limits, or whose
-observation or action size differs from the model's. On a tick where something the policy needs was not measured
+`duckd` refuses a deployment of another schema, an observation it cannot measure or one with a history, joints that
+are not the robot's or not in its order, a default pose outside the joint limits, or a network whose sizes differ
+from the manifest's. Where trainnr's format leaves a convention unstated (trainnr#106), `policy.rs` says which
+reading it takes. Checked on the board on 2026-11-15 with a real export (a 50-iteration pipeline check on Pollen's
+microduck, whose joints match ours): loaded and checked, 0.40 ms per inference. On a tick where something the policy needs was not measured
 (a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
 
 `angular_velocity` comes from the gyro in the firmware's state message (protocol 3), in the body frame (x forward,

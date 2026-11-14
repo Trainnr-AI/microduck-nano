@@ -16,6 +16,7 @@ work, and dated project records.
 | Page | What |
 |---|---|
 | [firmware.md](design/firmware.md) | Which processor does what, the safety model, the functions between the two sides, servo registers |
+| [sim-to-real.md](design/sim-to-real.md) | The pipeline from trainnr to the robot: each stage, its tool, what works and what is blocked |
 
 ## `project/`: dated records
 

@@ -4,7 +4,7 @@
 
     uv run --with onnx --with numpy python make_fixture.py
 
-tiny_policy.onnx: obs[1,61] -> action[1,14], two layers with an ELU between, weights chosen so the tests can
+tiny_policy/policy.onnx (its manifest is tiny_policy/deploy.json, trainnr's format): obs[1,61] -> action[1,14], two layers with an ELU between, weights chosen so the tests can
 compute the expected output by hand:
   hidden = ELU(obs[0:14] * 1.0 + 0)          (the first 14 observation values pass through; negatives are squashed)
   action = hidden * 0.5 + 0.1
@@ -31,6 +31,6 @@ graph = helper.make_graph(nodes, "tiny_policy",
 model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 model.ir_version = 9
 onnx.checker.check_model(model)
-out = Path(__file__).with_name("tiny_policy.onnx")
+out = Path(__file__).with_name("tiny_policy") / "policy.onnx"
 onnx.save(model, out)
 print(out.name, out.stat().st_size, "bytes")
