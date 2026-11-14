@@ -4,7 +4,7 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 
 ## Works today
 
-- **Firmware on a bare Arduino UNO Q.** Builds, passes 19 host tests, runs on the board on both the shipped and the
+- **Firmware on a bare Arduino UNO Q.** Builds, passes 20 host tests, runs on the board on both the shipped and the
   updated board software. The Linux side and the microcontroller talk; arming is refused. No servo has been driven.
 - **Runtime in Rust on rigrs** ([`runtime/`](../../runtime/)). Reads the firmware's state through the board's router
   and runs a dry-run control loop with rigrs guards. Measured on the board: a tick's exchange with the microcontroller took 18 ms
@@ -26,8 +26,11 @@ Status on 2026-11-15. Ordered by what blocks what, not by date.
 1. **Fix what the review found**, in the design repository: the head interlock collision, the right-leg hip map,
    battery clearances and protection, regulator placement. Then re-run the review.
 2. **One servo on the bench.** Confirm steps per degree, the protection registers and the adapter at 5 V; record
-   telemetry and fit an actuator model for the SCS0009 (trainnr `identify_system`). Nothing trained before this is
-   trustworthy.
+   telemetry (`duckd run --record`) and fit an actuator model for the SCS0009. Nothing trained before this is
+   trustworthy. Two things stand in the way: trainnr has no method that fits a servo model from a recording
+   ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)), and the firmware cannot move a single
+   servo on its own (arming needs all fifteen calibrated); a supervised bench-motion mode is a safety decision still
+   to make.
 3. **Feed the policy runner.** The Rust runtime can load a policy, check it against the robot and run it in the
    loop (0.48 ms per inference on the board; about 7 ms per tick with the exchange). The gyro is in the
    firmware's state message (protocol 3, running on the board with no IMU attached); it still needs a command source and above all a

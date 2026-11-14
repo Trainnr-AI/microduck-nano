@@ -21,6 +21,7 @@ serde_json = "1"
 tract-onnx = "0.23.10"
 # Ctrl-C and SIGTERM end `duckd run` cleanly (the status light goes out), without unsafe code here.
 ctrlc = { version = "3.4", features = ["termination"] }
+mcap = { version = "0.26.0", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

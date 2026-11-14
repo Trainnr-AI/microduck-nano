@@ -64,6 +64,20 @@ policy driving, yellow the policy skipped for a missing input, red a failed exch
 `DUCKD RUN` (or `DUCKD POLICY`) on the LED matrix as it starts and `DUCKD DONE` when it stops; `duckd say TEXT`
 puts any short text there. The rest of the board's lights belong to the firmware: [status-lights.md](../docs/robot/status-lights.md).
 
+## Recording for system identification
+
+`duckd run --record FILE.mcap` writes every tick that reached the firmware into an MCAP file of ROS 2 messages:
+`/joint_states` (measured angles, NaN where a servo did not answer), `/joint_commands` (the targets sent, with
+`--exchange step`) and `/imu` (orientation from pitch and roll with yaw unknown, the gyro; NaN for what is not
+measured). trainnr's `ingest_recording` reads it with its `mcap` adapter; checked on 2026-11-15 with a synthetic
+recording and one from the bare board, and with an independent ROS 2 decoder (`mcap-ros2-support`).
+
+What it cannot give yet: joint velocity and torque (the firmware reports neither; a servo's "load" is a duty cycle),
+the time each servo was read (messages carry the time `duckd` received the state), and a fast reading of every
+joint (the firmware reads one servo per 10 ms tick, so with all fifteen fitted each is read at 6.7 Hz).
+Turning a recording into an SCS0009 actuator model is not something trainnr does yet:
+[Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101).
+
 ## Run on the board
 
 The firmware app must be running (see [build-and-flash.md](../docs/robot/build-and-flash.md)).

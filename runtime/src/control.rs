@@ -16,6 +16,7 @@ use arm::{Guard, Verdict};
 use crate::bridge::{Bridge, BridgeError};
 use crate::firmware;
 use crate::policy::{Policy, Sensed};
+use crate::record::Recorder;
 use crate::robot::Robot;
 use crate::status_led::{Colour, StatusLed};
 
@@ -24,6 +25,21 @@ pub static STOP: AtomicBool = AtomicBool::new(false);
 
 /// Commands older than this are stale and the guard holds (rigrs `Guard`).
 const SOURCE_TIMEOUT_MS: u64 = 500;
+
+/// Where the loop reports each tick besides its statistics: the status light, and a recording if one is open.
+pub struct Sinks {
+    pub led: StatusLed,
+    pub recorder: Option<Recorder>,
+    /// Why the recording stopped early, if it did; the loop itself carries on.
+    pub record_error: Option<String>,
+}
+
+impl Sinks {
+    /// No light, no recording (tests, timing runs).
+    pub fn none() -> Self {
+        Sinks { led: StatusLed::none(), recorder: None, record_error: None }
+    }
+}
 
 /// What one chain's guard said on one tick.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,8 +152,9 @@ fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
 /// Run the loop for `duration` at `period`. Without a policy the target is "stay where you are"; with one, the
 /// policy's targets (for `command`) go through the guards. Either way nothing moves unless the firmware is armed.
 ///
-/// `led` shows each tick: green = holding in place (no policy), blue = the policy produced the targets,
+/// `sinks.led` shows each tick: green = holding in place (no policy), blue = the policy produced the targets,
 /// yellow = the policy could not run this tick (an input was missing), red = the exchange with the firmware failed.
+/// `sinks.recorder`, if open, gets every tick that reached the firmware: what was measured and what was sent.
 pub fn run<S: Read + Write>(
     bridge: &mut Bridge<S>,
     robot: &Robot,
@@ -145,7 +162,7 @@ pub fn run<S: Read + Write>(
     duration: Duration,
     exchange: Exchange,
     mut policy: Option<(&mut Policy, &[f64])>,
-    led: &mut StatusLed,
+    sinks: &mut Sinks,
 ) -> LoopStats {
     let mut guards = Guards::new(robot, period);
     let mut stats = LoopStats::default();
@@ -156,28 +173,35 @@ pub fn run<S: Read + Write>(
     while start.elapsed() < duration && !STOP.load(Ordering::Relaxed) {
         let tick_start = Instant::now();
         let now_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // The targets that go out with this tick's exchange, for the recording.
+        let sending = if exchange == Exchange::Step { allowed.clone() } else { None };
         match read_state(bridge, exchange, allowed.as_deref()) {
             Ok(sensed) => {
+                let recorded = sinks.recorder.as_mut().map(|r| r.tick(&sensed, sending.as_deref()));
+                if let Some(Err(e)) = recorded {
+                    sinks.record_error = Some(e.to_string());
+                    sinks.recorder = None;
+                }
                 let measured = &sensed.joints;
                 // Without a policy (or when it cannot run this tick) the command is: hold every joint where it is.
                 let hold = || measured.iter().map(|m| m.unwrap_or(0.0)).collect::<Vec<f64>>();
                 let wanted = match policy.as_mut() {
                     None => {
-                        led.show(Colour::Green);
+                        sinks.led.show(Colour::Green);
                         hold()
                     }
                     Some((policy, command)) => match policy.act(&sensed, command, period.as_secs_f64()) {
                         Ok(targets) => {
                             stats.policy_ran += 1;
                             stats.inference_us.push(policy.last_inference_us);
-                            led.show(Colour::Blue);
+                            sinks.led.show(Colour::Blue);
                             targets
                         }
                         Err(why) => {
                             stats.policy_skipped += 1;
                             stats.last_policy_skip = Some(why.to_string());
                             policy.reset();
-                            led.show(Colour::Yellow);
+                            sinks.led.show(Colour::Yellow);
                             hold()
                         }
                     },
@@ -200,7 +224,7 @@ pub fn run<S: Read + Write>(
             Err(e) => {
                 stats.errors += 1;
                 stats.last_error = Some(e.to_string());
-                led.show(Colour::Red);
+                sinks.led.show(Colour::Red);
             }
         }
         stats.round_trip_us.push(u64::try_from(tick_start.elapsed().as_micros()).unwrap_or(u64::MAX));

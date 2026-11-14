@@ -9,6 +9,7 @@ use duck_runtime::control;
 use duck_runtime::firmware;
 use duck_runtime::policy::{Manifest, Policy, Sensed};
 use duck_runtime::robot::Robot;
+use duck_runtime::record::Recorder;
 use duck_runtime::status_led::StatusLed;
 
 const USAGE: &str = "\
@@ -25,7 +26,7 @@ usage:
       Load a policy (its manifest is the .json beside it), check it against the robot, and time inference alone
       on made-up observations. Needs no firmware.
   duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy policy.onnx]
-            [--socket PATH]
+            [--record FILE.mcap] [--socket PATH]
       Dry-run the control loop: read state every tick, pass a hold-in-place target through the rigrs guards,
       and report round-trip time to the microcontroller and missed deadlines.
         state      one read per tick (default; sends nothing)
@@ -36,6 +37,8 @@ usage:
       policy's rate. A tick on which an input the policy needs was not measured holds instead.
       The board's LED1 shows each tick: green = holding in place, blue = the policy drove the targets,
       yellow = the policy could not run (an input was missing), red = the exchange failed; off when duckd exits.
+      With --record, every tick's measured joints, sent targets and IMU go into an MCAP file (ROS 2 messages) that
+      trainnr's ingest_recording reads.
 ";
 
 struct Args {
@@ -47,13 +50,14 @@ struct Args {
     count: u32,
     exchange: control::Exchange,
     policy: Option<String>,
+    record: Option<String>,
     /// `duckd say`'s text.
     text: Option<String>,
 }
 
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
-    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, text: None };
+    let mut args = Args { command, socket: ROUTER_SOCKET.to_string(), robot: None, hz: 50.0, seconds: 10.0, count: 200, exchange: control::Exchange::State, policy: None, record: None, text: None };
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -70,6 +74,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--policy" => args.policy = Some(value()?),
+            "--record" => args.record = Some(value()?),
             "--count" => args.count = value()?.parse().map_err(|_| "--count needs a whole number")?,
             word if args.command == "say" && !word.starts_with("--") => {
                 let text = args.text.get_or_insert_with(String::new);
@@ -221,8 +226,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(130);
                 }
             })?;
-            let mut led = StatusLed::find();
+            let led = StatusLed::find();
             println!("status light (LED1): {}", if led.present() { "yes" } else { "not found" });
+            let recorder = args.record.as_deref().map(Recorder::create).transpose()?;
+            let mut sinks = control::Sinks { led, recorder, record_error: None };
             // Announce on the matrix; an older firmware without duck_say just does not show it.
             let _ = firmware::say(&mut bridge, if policy.is_some() { "DUCKD POLICY" } else { "DUCKD RUN" });
             let stats = control::run(
@@ -232,9 +239,15 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_secs_f64(args.seconds),
                 args.exchange,
                 policy.as_mut().map(|p| (p, command.as_slice())),
-                &mut led,
+                &mut sinks,
             );
-            drop(led); // the light goes out with the loop
+            drop(sinks.led); // the light goes out with the loop
+            if let (Some(recorder), Some(path)) = (sinks.recorder, &args.record) {
+                println!("recorded {} ticks to {path}", recorder.finish()?);
+            }
+            if let Some(why) = &sinks.record_error {
+                println!("{why}; the recording stopped there and is not readable");
+            }
             let _ = firmware::say(&mut bridge, "DUCKD DONE");
             let ms = |us: Option<u64>| us.map_or("-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
             println!("ticks {}   errors {}   missed deadlines {}", stats.ticks, stats.errors, stats.missed_deadlines);

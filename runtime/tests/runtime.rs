@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use arm::Verdict;
 use duck_runtime::bridge::{Bridge, BridgeError};
-use duck_runtime::control::{self, ChainOutcome, Exchange, Guards};
+use duck_runtime::control::{self, ChainOutcome, Exchange, Guards, Sinks};
 use duck_runtime::firmware;
 use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Sensed};
+use duck_runtime::record::{orientation, Recorder};
 use duck_runtime::robot::{Robot, JOINT_NAMES};
 use duck_runtime::status_led::{Colour, StatusLed};
 use rmpv::Value;
@@ -195,7 +196,7 @@ fn the_guard_holds_when_commands_go_stale_and_when_a_servo_is_silent() {
 fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
     let mut bridge = fake_router(standing_robot);
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None, &mut StatusLed::none());
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None, &mut Sinks::none());
     assert!(stats.ticks >= 25 && stats.ticks <= 32, "about 30 ticks in 300 ms at 100 Hz, got {}", stats.ticks);
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.unmeasured_chain_ticks, 0);
@@ -203,7 +204,7 @@ fn the_dry_run_loop_keeps_time_against_a_fake_router() {
     assert!(stats.percentile(0.5).is_some());
 
     let mut bare = fake_router(bare_board);
-    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State, None, &mut StatusLed::none());
+    let stats = control::run(&mut bare, &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::State, None, &mut Sinks::none());
     assert_eq!(stats.moves, 0, "with no servo answering nothing is authorised");
     assert_eq!(stats.unmeasured_chain_ticks, stats.ticks * 4);
 }
@@ -227,7 +228,7 @@ fn one_exchange_per_tick_reads_state_and_reports_what_the_firmware_did_with_targ
     assert!(firmware::step(&mut bridge, &[0.0; 14]).is_err());
 
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
-    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None, &mut StatusLed::none());
+    let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None, &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.moves, stats.ticks * 4);
 }
@@ -349,7 +350,7 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     let mut policy = Policy::load(TINY_ONNX, manifest(no_gyro), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
     let command = [0.0; 16];
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)), &mut StatusLed::none());
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)), &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
     assert_eq!(stats.policy_skipped, 0);
@@ -360,13 +361,13 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
     let command = [0.0; 13];
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)), &mut StatusLed::none());
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)), &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
 
     // ... and is skipped, holding in place, on a tick when it does not.
     let mut bridge = fake_router(standing_robot_without_gyro);
-    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)), &mut StatusLed::none());
+    let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::State, Some((&mut needs_gyro, &command)), &mut Sinks::none());
     assert_eq!(stats.policy_ran, 0);
     assert_eq!(stats.policy_skipped, stats.ticks);
     assert!(stats.last_policy_skip.as_deref().unwrap_or("").contains("angular velocity"));
@@ -397,23 +398,23 @@ fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
     let robot = Robot::load(ROBOT_JSON).expect("robot.json");
     let leds = fake_leds("loop");
     {
-        let mut led = StatusLed::find_in(&leds);
-        assert!(led.present());
+        let mut sinks = Sinks { led: StatusLed::find_in(&leds), recorder: None, record_error: None };
+        assert!(sinks.led.present());
         // holding in place, no policy: green
-        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, None, &mut led);
+        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, None, &mut sinks);
         assert_eq!(lit(&leds), [false, true, false]);
         // a policy that needs the gyro, which is not reporting: yellow
         let mut needs_gyro = Policy::load(TINY_ONNX, manifest(|t| t), &robot).expect("policy");
         let command = [0.0; 13];
-        control::run(&mut fake_router(standing_robot_without_gyro), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut led);
+        control::run(&mut fake_router(standing_robot_without_gyro), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut sinks);
         assert_eq!(lit(&leds), [true, true, false]);
         // the policy running: blue
-        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut led);
+        control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut sinks);
         assert_eq!(lit(&leds), [false, false, true]);
         // the firmware not answering: red
-        control::run(&mut fake_router(|_| None), &robot, Duration::from_millis(10), Duration::from_millis(30), Exchange::State, None, &mut led);
+        control::run(&mut fake_router(|_| None), &robot, Duration::from_millis(10), Duration::from_millis(30), Exchange::State, None, &mut sinks);
         assert_eq!(lit(&leds), [true, false, false]);
-        led.show(Colour::White);
+        sinks.led.show(Colour::White);
         assert_eq!(lit(&leds), [true, true, true]);
     }
     assert_eq!(lit(&leds), [false, false, false], "dropped: off");
@@ -450,4 +451,60 @@ fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
 #[test]
 fn text_for_the_matrix_reaches_the_firmware() {
     assert_eq!(firmware::say(&mut fake_router(bare_board), "hello").expect("say"), 5);
+}
+
+// ---------------------------------------------------------------- recording
+
+#[test]
+fn a_recording_holds_every_tick_as_ros2_messages() {
+    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let path = std::env::temp_dir().join(format!("duck-record-{}.mcap", std::process::id()));
+    let mut sinks = Sinks { led: StatusLed::none(), recorder: Some(Recorder::create(&path).expect("create")), record_error: None };
+    let stats = control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::Step, None, &mut sinks);
+    assert_eq!(sinks.record_error, None);
+    let recorder = sinks.recorder.take().expect("still recording");
+    assert_eq!(recorder.finish().expect("finish"), stats.ticks);
+
+    let bytes = std::fs::read(&path).expect("read back");
+    let mut counts = std::collections::BTreeMap::<String, u32>::new();
+    let mut first_state: Option<Vec<u8>> = None;
+    for message in mcap::MessageStream::new(&bytes).expect("an MCAP") {
+        let message = message.expect("a message");
+        assert_eq!(message.channel.message_encoding, "cdr");
+        if message.channel.topic == "/joint_states" && first_state.is_none() {
+            first_state = Some(message.data.to_vec());
+        }
+        *counts.entry(message.channel.topic.clone()).or_default() += 1;
+    }
+    assert_eq!(counts.get("/joint_states"), Some(&stats.ticks));
+    assert_eq!(counts.get("/imu"), Some(&stats.ticks), "the IMU reports on every tick of this robot");
+    // targets go out from the second tick on (the first has nothing authorised yet)
+    assert_eq!(counts.get("/joint_commands"), Some(&(stats.ticks - 1)));
+
+    // The first joint state: CDR header, stamp, empty frame id, fifteen names, fifteen positions of 0.5 degrees.
+    let data = first_state.expect("a joint state");
+    assert_eq!(&data[..4], &[0, 1, 0, 0]);
+    let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().expect("4 bytes"));
+    assert_eq!(u32_at(12), 1, "frame_id is the empty string");
+    assert_eq!(u32_at(20), 15, "one name per joint");
+    let name_len = u32_at(24) as usize;
+    assert_eq!(&data[28..28 + name_len - 1], b"left_hip_yaw");
+    let tail = &data[data.len() - 8 * 15 - 8..];
+    let positions: Vec<f64> = tail[..8 * 15].chunks(8).map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes"))).collect();
+    assert!(positions.iter().all(|p| (p - 0.5f64.to_radians()).abs() < 1e-12), "{positions:?}");
+    assert_eq!(&tail[8 * 15..], &[0u8; 8], "velocity and effort are empty");
+    // DUCK_KEEP_RECORDING=<path> keeps a copy, to check the file with another MCAP / ROS 2 reader.
+    if let Ok(keep) = std::env::var("DUCK_KEEP_RECORDING") {
+        std::fs::copy(&path, keep).expect("keep a copy");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn nose_up_is_a_negative_rotation_about_y() {
+    let q = orientation(0.2, 0.0);
+    assert!(q[0].abs() < 1e-12 && q[2].abs() < 1e-12);
+    assert!((q[1] + (0.1f64).sin()).abs() < 1e-12 && (q[3] - (0.1f64).cos()).abs() < 1e-12);
+    let q = orientation(0.0, 0.3); // left side up: positive about x
+    assert!((q[0] - (0.15f64).sin()).abs() < 1e-12);
 }

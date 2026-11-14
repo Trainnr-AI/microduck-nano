@@ -29,6 +29,10 @@ are powered.
    and which way the numbers go.
 8. Read registers 9..12 (angle limits), 13, 19, 37, 38, 39 and compare with the factory values in the register tables in [the firmware design](../design/firmware.md)
    (20 / 1003, 70, -, 20, 200, 80). This is the check of the unconfirmed addresses.
+   To watch or record the servo through the runtime, give one joint its ID in `config/robot.json` (for example
+   `left_knee`), regenerate the header and flash: disarmed, the firmware reads it every 100 ms, and
+   `duckd run --robot robot.json --record bench.mcap` records it for trainnr. It cannot be moved this way: arming
+   needs all fifteen servos calibrated.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 

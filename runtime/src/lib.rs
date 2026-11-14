@@ -9,5 +9,6 @@ pub mod bridge;
 pub mod control;
 pub mod firmware;
 pub mod policy;
+pub mod record;
 pub mod robot;
 pub mod status_led;
