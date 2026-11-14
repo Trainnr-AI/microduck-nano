@@ -7,25 +7,50 @@
 
 use std::io::{Read, Write};
 
+use rmpv::Value;
+
 use crate::bridge::{Bridge, BridgeError};
 use crate::robot::JOINT_NAMES;
+
+/// The firmware protocol this runtime speaks: 3 added the gyro to the state message.
+pub const PROTOCOL: i64 = 3;
+/// The arm key the firmware expects (`duck::kArmKey`).
+pub const ARM_KEY: u32 = 0xD0C5_A4B3;
 
 /// The firmware's value for "not measured" (a servo that did not answer, a gyro that is not reporting).
 const MISSING: i64 = -32768;
 
-/// The firmware protocol this runtime speaks: 3 added the gyro to the state message.
-pub const PROTOCOL: i64 = 3;
-
 const MODES: [&str; 3] = ["DISARMED", "ARMED", "FAULT"];
+const BENCH_MODES: [&str; 3] = ["OFF", "ARMED", "FAULT"];
 const POSTURES: [&str; 6] =
     ["UNKNOWN", "STANDING", "SITTING", "MOVING_TO_SIT", "MOVING_TO_STAND", "RETURNING_TO_STAND"];
 const FAULTS: [&str; 8] = [
     "none", "overload", "over-temperature", "under-voltage", "servo status", "servo not answering", "fall",
     "bus write",
 ];
+/// Result codes of a command, as the firmware reports them (`duck::Result`).
+const RESULTS: [&str; 14] = [
+    "ok", "firmware built without motion", "bad key", "joint table not calibrated", "servo missing", "IMU required",
+    "fault latched", "not armed", "already armed", "wrong posture", "not at the STAND keyframe",
+    "facing uphill: sit refused", "busy", "bus error",
+];
 
 fn name(table: &[&'static str], code: i64) -> &'static str {
     usize::try_from(code).ok().and_then(|i| table.get(i).copied()).unwrap_or("unknown code")
+}
+
+fn field(v: &[i64], i: usize) -> Result<i64, BridgeError> {
+    v.get(i).copied().ok_or(BridgeError::Shape("reply is shorter than the firmware's protocol says"))
+}
+
+/// An angle on the wire (tenths of a degree, [`MISSING`] for none) in radians.
+fn angle(tenths: i64) -> Option<f64> {
+    (tenths != MISSING).then(|| (tenths as f64 / 10.0).to_radians())
+}
+
+/// An angle in radians as the wire carries it: tenths of a degree.
+fn tenths(radians: f64) -> i64 {
+    (radians.to_degrees() * 10.0).round() as i64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +65,20 @@ pub struct Info {
     pub bench_build: bool,
 }
 
+pub fn info<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Info, BridgeError> {
+    let v = bridge.call_ints("duck_info", vec![])?;
+    let flag = |i| field(&v, i).map(|b| b != 0);
+    Ok(Info {
+        protocol: field(&v, 0)?,
+        motion_build: flag(1)?,
+        eeprom_build: flag(2)?,
+        joint_table_ready: flag(3)?,
+        imu_present: flag(4)?,
+        servo_uart_is_serial1: flag(5)?,
+        bench_build: flag(6).unwrap_or(false),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub mode: &'static str,
@@ -52,43 +91,43 @@ pub struct Status {
     pub worst_tick_us: i64,
 }
 
-fn field(v: &[i64], i: usize) -> Result<i64, BridgeError> {
-    v.get(i).copied().ok_or(BridgeError::Shape("reply is shorter than the firmware's protocol says"))
-}
+impl Status {
+    /// Read from the words at `at`: mode, posture, fault, flags, IMU ok, pitch x10, roll x10, worst tick.
+    /// (`duck_status` and the state message lay them out differently.)
+    fn from_words(v: &[i64], at: [usize; 8]) -> Result<Self, BridgeError> {
+        let [mode, posture, fault, flags, imu_ok, pitch, roll, worst] = at.map(|i| field(v, i));
+        Ok(Status {
+            mode: name(&MODES, mode?),
+            posture: name(&POSTURES, posture?),
+            fault: name(&FAULTS, fault?),
+            flags: flags?,
+            imu_ok: imu_ok? != 0,
+            pitch_deg: pitch? as f64 / 10.0,
+            roll_deg: roll? as f64 / 10.0,
+            worst_tick_us: worst?,
+        })
+    }
 
-pub fn info<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Info, BridgeError> {
-    let v = bridge.call_ints("duck_info", vec![])?;
-    Ok(Info {
-        protocol: field(&v, 0)?,
-        motion_build: field(&v, 1)? != 0,
-        eeprom_build: field(&v, 2)? != 0,
-        joint_table_ready: field(&v, 3)? != 0,
-        imu_present: field(&v, 4)? != 0,
-        servo_uart_is_serial1: field(&v, 5)? != 0,
-        bench_build: v.get(6).is_some_and(|&b| b != 0),
-    })
+    /// Trunk pitch and roll in radians, if the IMU is usable.
+    pub fn pitch_roll(&self) -> Option<(f64, f64)> {
+        self.imu_ok.then(|| (self.pitch_deg.to_radians(), self.roll_deg.to_radians()))
+    }
 }
 
 pub fn status<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Status, BridgeError> {
-    let v = bridge.call_ints("duck_status", vec![])?;
-    Ok(Status {
-        mode: name(&MODES, field(&v, 0)?),
-        posture: name(&POSTURES, field(&v, 1)?),
-        fault: name(&FAULTS, field(&v, 2)?),
-        flags: field(&v, 4)?,
-        imu_ok: field(&v, 5)? != 0,
-        pitch_deg: field(&v, 6)? as f64 / 10.0,
-        roll_deg: field(&v, 7)? as f64 / 10.0,
-        worst_tick_us: field(&v, 9)?,
-    })
+    Status::from_words(&bridge.call_ints("duck_status", vec![])?, [0, 1, 2, 4, 5, 6, 7, 9])
 }
 
-/// Result codes of a command, as the firmware reports them (`duck::Result`).
-const RESULTS: [&str; 14] = [
-    "ok", "firmware built without motion", "bad key", "joint table not calibrated", "servo missing", "IMU required",
-    "fault latched", "not armed", "already armed", "wrong posture", "not at the STAND keyframe",
-    "facing uphill: sit refused", "busy", "bus error",
-];
+/// What the robot measured on one tick, in the firmware's joint order. `None` means "not measured", never zero.
+#[derive(Debug, Clone, Default)]
+pub struct Sensed {
+    /// Joint angles in radians, all fifteen.
+    pub joints: Vec<Option<f64>>,
+    /// Trunk pitch (nose up positive) and roll (left side up positive) in radians, from the IMU.
+    pub pitch_roll: Option<(f64, f64)>,
+    /// Body angular velocity in rad/s.
+    pub angular_velocity: Option<[f64; 3]>,
+}
 
 /// Everything a control tick needs, from one reply (firmware protocol 3: `duck_state` and `duck_step`).
 #[derive(Debug, Clone, PartialEq)]
@@ -103,6 +142,12 @@ pub struct State {
     pub angular_velocity: Option<[f64; 3]>,
 }
 
+impl State {
+    pub fn sensed(self) -> Sensed {
+        Sensed { pitch_roll: self.status.pitch_roll(), joints: self.joints, angular_velocity: self.angular_velocity }
+    }
+}
+
 fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
     let joints = JOINT_NAMES.len();
     if v.len() == 10 + joints {
@@ -111,22 +156,13 @@ fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
     if v.len() != 10 + joints + 3 {
         return Err(BridgeError::Shape("state reply is not 10 words, one per joint, then 3 gyro words"));
     }
-    let status = Status {
-        mode: name(&MODES, field(v, 1)?),
-        posture: name(&POSTURES, field(v, 2)?),
-        fault: name(&FAULTS, field(v, 3)?),
-        flags: field(v, 5)?,
-        imu_ok: field(v, 6)? != 0,
-        pitch_deg: field(v, 7)? as f64 / 10.0,
-        roll_deg: field(v, 8)? as f64 / 10.0,
-        worst_tick_us: field(v, 9)?,
-    };
-    // The length was checked above: three gyro words follow the joints.
     let gyro = [field(v, 10 + joints)?, field(v, 11 + joints)?, field(v, 12 + joints)?];
-    let angular_velocity = (!gyro.contains(&MISSING)).then(|| gyro.map(|w| (w as f64 / 10.0).to_radians()));
-    let joints =
-        v.iter().skip(10).take(joints).map(|&t| (t != MISSING).then(|| (t as f64 / 10.0).to_radians())).collect();
-    Ok(State { result: name(&RESULTS, field(v, 0)?), status, joints, angular_velocity })
+    Ok(State {
+        result: name(&RESULTS, field(v, 0)?),
+        status: Status::from_words(v, [1, 2, 3, 5, 6, 7, 8, 9])?,
+        joints: v.iter().skip(10).take(joints).map(|&w| angle(w)).collect(),
+        angular_velocity: (!gyro.contains(&MISSING)).then(|| gyro.map(|w| (w as f64 / 10.0).to_radians())),
+    })
 }
 
 /// Read the whole state in one round trip.
@@ -142,8 +178,17 @@ pub fn step<S: Read + Write>(bridge: &mut Bridge<S>, targets: &[f64]) -> Result<
     if targets.len() != JOINT_NAMES.len() || targets.iter().any(|t| !t.is_finite()) {
         return Err(BridgeError::Shape("step needs one finite target per joint"));
     }
-    let tenths = targets.iter().map(|t| rmpv::Value::from((t.to_degrees() * 10.0).round() as i64)).collect();
-    parse_state(&bridge.call_ints("duck_step", vec![rmpv::Value::Array(tenths)])?)
+    let words = targets.iter().map(|&t| Value::from(tenths(t))).collect();
+    parse_state(&bridge.call_ints("duck_step", vec![Value::Array(words)])?)
+}
+
+/// Measured joint angles in radians, in the firmware's joint order. `None` where the servo did not answer.
+pub fn joints<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Vec<Option<f64>>, BridgeError> {
+    let v = bridge.call_ints("duck_joints", vec![])?;
+    if v.len() != JOINT_NAMES.len() {
+        return Err(BridgeError::Shape("duck_joints did not return one value per joint"));
+    }
+    Ok(v.into_iter().map(angle).collect())
 }
 
 /// Put `text` on the board's LED matrix (firmware protocol 3). Up to 32 characters; letters, digits and a few
@@ -151,17 +196,7 @@ pub fn step<S: Read + Write>(bridge: &mut Bridge<S>, targets: &[f64]) -> Result<
 /// (longer if it scrolls), then the firmware's status ticker returns; a fault always shows instead. An empty string
 /// clears it. Returns how many characters the firmware kept.
 pub fn say<S: Read + Write>(bridge: &mut Bridge<S>, text: &str) -> Result<i64, BridgeError> {
-    call_int(bridge, "duck_say", vec![rmpv::Value::from(text)])
-}
-
-/// The arm key the firmware expects (`duck::kArmKey`).
-pub const ARM_KEY: u32 = 0xD0C5_A4B3;
-
-fn call_int<S: Read + Write>(bridge: &mut Bridge<S>, method: &str, params: Vec<rmpv::Value>) -> Result<i64, BridgeError> {
-    match bridge.call(method, params)? {
-        rmpv::Value::Integer(n) => n.as_i64().ok_or(BridgeError::Shape("expected a whole number")),
-        _ => Err(BridgeError::Shape("expected a whole number")),
-    }
+    bridge.call_int("duck_say", vec![Value::from(text)])
 }
 
 /// What the firmware's bench servo did and read (bench build only; `duck_bench_step`).
@@ -180,7 +215,13 @@ pub struct Bench {
     pub setpoint: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Bench {
+    pub fn armed(&self) -> bool {
+        self.mode == BENCH_MODES[1]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchReading {
     pub position: f64,
     /// The servo's own speed report, rad/s.
@@ -193,31 +234,29 @@ pub struct BenchReading {
     pub read_ms: u32,
 }
 
-const BENCH_MODES: [&str; 3] = ["OFF", "ARMED", "FAULT"];
-
-/// Arm one joint's servo on its own (bench build). Returns the firmware's result: "ok" or why not.
-pub fn bench_arm<S: Read + Write>(bridge: &mut Bridge<S>, joint: usize) -> Result<&'static str, BridgeError> {
+/// Arm one joint's servo on its own (bench build). `Ok(())`, or the firmware's reason for refusing.
+pub fn bench_arm<S: Read + Write>(bridge: &mut Bridge<S>, joint: usize) -> Result<Result<(), &'static str>, BridgeError> {
     let joint = i64::try_from(joint).map_err(|_| BridgeError::Shape("joint index"))?;
-    let result = call_int(bridge, "duck_bench_arm", vec![rmpv::Value::from(ARM_KEY), rmpv::Value::from(joint)])?;
-    Ok(name(&RESULTS, result))
+    let result = bridge.call_int("duck_bench_arm", vec![Value::from(ARM_KEY), Value::from(joint)])?;
+    Ok(if result == 0 { Ok(()) } else { Err(name(&RESULTS, result)) })
 }
 
 /// Send the bench servo's target (radians; `None`: no new target, just read) and get its state back.
 pub fn bench_step<S: Read + Write>(bridge: &mut Bridge<S>, target: Option<f64>) -> Result<Bench, BridgeError> {
-    let tenths = match target {
-        Some(t) if t.is_finite() => (t.to_degrees() * 10.0).round() as i64,
+    let word = match target {
+        Some(t) if t.is_finite() => tenths(t),
         Some(_) => return Err(BridgeError::Shape("the bench target must be a finite number")),
         None => MISSING,
     };
-    let v = bridge.call_ints("duck_bench_step", vec![rmpv::Value::from(tenths)])?;
+    let v = bridge.call_ints("duck_bench_step", vec![Value::from(word)])?;
     if v.len() != 12 {
         return Err(BridgeError::Shape("bench reply is not 12 words"));
     }
-    let deg10 = |i: usize| field(&v, i).map(|t| (t as f64 / 10.0).to_radians());
+    let radians = |i| field(&v, i).map(|w| (w as f64 / 10.0).to_radians());
     let reading = if field(&v, 4)? != 0 {
         Some(BenchReading {
-            position: deg10(5)?,
-            velocity: deg10(6)?,
+            position: radians(5)?,
+            velocity: radians(6)?,
             load_percent: field(&v, 7)? as f64 / 10.0,
             voltage: field(&v, 8)? as f64 / 10.0,
             temperature_c: field(&v, 9)?,
@@ -232,20 +271,11 @@ pub fn bench_step<S: Read + Write>(bridge: &mut Bridge<S>, target: Option<f64>) 
         fault: name(&FAULTS, field(&v, 2)?),
         joint: usize::try_from(field(&v, 3)?).ok(),
         reading,
-        setpoint: deg10(11)?,
+        setpoint: radians(11)?,
     })
 }
 
 /// Torque off on the bench servo and forget a latched bench fault.
 pub fn bench_disarm<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<(), BridgeError> {
-    call_int(bridge, "duck_bench_disarm", vec![]).map(|_| ())
-}
-
-/// Measured joint angles in radians, in the firmware's joint order. `None` where the servo did not answer.
-pub fn joints<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Vec<Option<f64>>, BridgeError> {
-    let v = bridge.call_ints("duck_joints", vec![])?;
-    if v.len() != JOINT_NAMES.len() {
-        return Err(BridgeError::Shape("duck_joints did not return one value per joint"));
-    }
-    Ok(v.iter().map(|&tenths| (tenths != MISSING).then(|| (tenths as f64 / 10.0).to_radians())).collect())
+    bridge.call_int("duck_bench_disarm", vec![]).map(drop)
 }

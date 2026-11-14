@@ -12,17 +12,19 @@
 //! | `/imu` | `sensor_msgs/msg/Imu` | trunk orientation from the firmware's pitch and roll (yaw unknown), body angular velocity |
 //!
 //! Velocity and effort are left empty: the firmware reports neither (the servo's "load" is a duty cycle, not a
-//! torque). Linear acceleration is NaN (no accelerometer report yet), as is any IMU part not measured that tick. Each message is stamped with the time `duckd` received the state, not when the servo was read. The IMU
-//! sign conventions are unchecked against a real sensor; see `docs/robot/bench-checklist.md`.
+//! torque). Linear acceleration is NaN (no accelerometer report yet), as is any IMU part not measured that tick.
+//! A loop tick is stamped with the time `duckd` received the state; a bench read with the time the servo was read.
+//! The IMU sign conventions are unchecked against a real sensor; see `docs/robot/bench-checklist.md`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufWriter, Seek, Write};
+use std::io::BufWriter;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::policy::Sensed;
+use crate::bench::BenchSample;
+use crate::firmware::Sensed;
 use crate::robot::JOINT_NAMES;
 
 const HEADER_DEFS: &str = "\
@@ -103,20 +105,18 @@ impl Cdr {
             self.0.push(0);
         }
     }
-    fn u32(&mut self, v: u32) {
-        self.align(4);
-        self.0.extend_from_slice(&v.to_le_bytes());
+    /// A primitive's little-endian bytes, aligned to its size.
+    fn put<const N: usize>(&mut self, bytes: [u8; N]) {
+        self.align(N);
+        self.0.extend_from_slice(&bytes);
     }
-    fn i32(&mut self, v: i32) {
-        self.align(4);
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-    fn f64(&mut self, v: f64) {
-        self.align(8);
-        self.0.extend_from_slice(&v.to_le_bytes());
+    fn f64s(&mut self, values: &[f64]) {
+        for v in values {
+            self.put(v.to_le_bytes());
+        }
     }
     fn len(&mut self, n: usize) {
-        self.u32(u32::try_from(n).unwrap_or(u32::MAX));
+        self.put(u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
     }
     fn string(&mut self, s: &str) {
         self.len(s.len() + 1);
@@ -124,15 +124,13 @@ impl Cdr {
         self.0.push(0);
     }
     fn header(&mut self, t_ns: u64, frame: &str) {
-        self.i32(i32::try_from(t_ns / 1_000_000_000).unwrap_or(i32::MAX));
-        self.u32(u32::try_from(t_ns % 1_000_000_000).unwrap_or(0));
+        self.put(i32::try_from(t_ns / 1_000_000_000).unwrap_or(i32::MAX).to_le_bytes());
+        self.put(u32::try_from(t_ns % 1_000_000_000).unwrap_or(0).to_le_bytes());
         self.string(frame);
     }
     fn f64_seq(&mut self, values: &[f64]) {
         self.len(values.len());
-        for &v in values {
-            self.f64(v);
-        }
+        self.f64s(values);
     }
 }
 
@@ -162,48 +160,13 @@ fn imu(t_ns: u64, pitch_roll: Option<(f64, f64)>, angular_velocity: Option<[f64;
     c.header(t_ns, "imu");
     // What is not measured is NaN as well as flagged: trainnr's adapter reads the values and not the -1 flag, and a
     // zero would pass for a measurement.
-    let q = pitch_roll.map_or([f64::NAN; 4], |(p, r)| orientation(p, r));
-    for v in q {
-        c.f64(v);
-    }
-    for v in if pitch_roll.is_some() { YAW_UNKNOWN } else { UNKNOWN } {
-        c.f64(v);
-    }
-    for v in angular_velocity.unwrap_or([f64::NAN; 3]) {
-        c.f64(v);
-    }
-    for v in if angular_velocity.is_some() { [0.0; 9] } else { UNKNOWN } {
-        c.f64(v);
-    }
-    for _ in 0..3 {
-        c.f64(f64::NAN); // no accelerometer report yet
-    }
-    for v in UNKNOWN {
-        c.f64(v);
-    }
+    c.f64s(&pitch_roll.map_or([f64::NAN; 4], |(p, r)| orientation(p, r)));
+    c.f64s(if pitch_roll.is_some() { &YAW_UNKNOWN } else { &UNKNOWN });
+    c.f64s(&angular_velocity.unwrap_or([f64::NAN; 3]));
+    c.f64s(if angular_velocity.is_some() { &[0.0; 9] } else { &UNKNOWN });
+    c.f64s(&[f64::NAN; 3]); // no accelerometer report yet
+    c.f64s(&UNKNOWN);
     c.0
-}
-
-/// One tick of a bench run: the target sent and the servo's state that came back.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BenchSample {
-    /// When the target was sent and the reply received, nanoseconds after the Unix epoch.
-    pub sent_ns: u64,
-    pub received_ns: u64,
-    /// The target asked for, radians.
-    pub target: f64,
-    /// The goal the firmware wrote last (after its clamp and speed limit), radians, from the same reply.
-    pub setpoint: f64,
-    /// The servo's last read in that reply, if it answered.
-    pub read: Option<BenchRead>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BenchRead {
-    /// The microcontroller's millisecond clock when it read the servo.
-    pub read_ms: u32,
-    pub position: f64,
-    pub velocity: f64,
 }
 
 /// Nanoseconds after the Unix epoch, now.
@@ -211,13 +174,9 @@ pub fn now_ns() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
-/// Anything an MCAP can be written to.
-pub trait Sink: Write + Seek {}
-impl<T: Write + Seek> Sink for T {}
-
 /// An open recording.
 pub struct Recorder {
-    writer: mcap::Writer<Box<dyn Sink>>,
+    writer: mcap::Writer<BufWriter<File>>,
     joint_states: u16,
     joint_commands: u16,
     joint_targets: u16,
@@ -231,12 +190,8 @@ impl Recorder {
     /// Start a recording at `path` (overwrites it).
     pub fn create(path: impl AsRef<Path>) -> Result<Self, RecordError> {
         let file = File::create(path.as_ref()).map_err(|e| RecordError(format!("{}: {e}", path.as_ref().display())))?;
-        Self::new(Box::new(BufWriter::new(file)))
-    }
-
-    pub fn new(sink: Box<dyn Sink>) -> Result<Self, RecordError> {
         let options = mcap::WriteOptions::new().profile("ros2").library("duckd").compression(None);
-        let mut writer = mcap::Writer::with_options(sink, options)?;
+        let mut writer = mcap::Writer::with_options(BufWriter::new(file), options)?;
         let joint_schema = format!("{JOINT_STATE_SCHEMA}{HEADER_DEFS}");
         let imu_schema = format!("{IMU_SCHEMA}{HEADER_DEFS}{IMU_EXTRA_DEFS}");
         let joint = writer.add_schema("sensor_msgs/msg/JointState", "ros2msg", joint_schema.as_bytes())?;
@@ -257,11 +212,7 @@ impl Recorder {
 
     /// Record one tick: what was measured and, if targets went out with it, what was sent (radians, firmware order).
     pub fn tick(&mut self, sensed: &Sensed, sent: Option<&[f64]>) -> Result<(), RecordError> {
-        self.tick_at(now_ns(), sensed, sent)
-    }
-
-    /// As [`Recorder::tick`], stamped `t_ns` nanoseconds after the Unix epoch.
-    pub fn tick_at(&mut self, t_ns: u64, sensed: &Sensed, sent: Option<&[f64]>) -> Result<(), RecordError> {
+        let t_ns = now_ns();
         let positions: Vec<f64> = sensed.joints.iter().map(|j| j.unwrap_or(f64::NAN)).collect();
         self.write(self.joint_states, t_ns, &joint_state(t_ns, &JOINT_NAMES, &positions, &[]))?;
         if let Some(sent) = sent {
@@ -277,8 +228,9 @@ impl Recorder {
     /// Record a bench run of one joint (`duckd bench`): each target asked for as `/joint_targets` at the time it was
     /// sent; for each distinct read of the servo, `/joint_states` (position and the servo's own speed) and
     /// `/joint_commands` (the goal the firmware wrote in that same tick, after its clamp and speed limit: what the
-    /// servo was actually told) at the time the microcontroller made it. Its clock is mapped onto this machine's by the reply that came back fastest, so the
-    /// link's delay and jitter stay out of the measured timing. Returns the number of distinct reads.
+    /// servo was actually told) at the time the microcontroller made it. Its clock is mapped onto this machine's by
+    /// the reply that came back fastest, so the link's delay and jitter stay out of the measured timing. Returns the
+    /// number of distinct reads.
     pub fn bench(&mut self, joint: &str, samples: &[BenchSample]) -> Result<usize, RecordError> {
         // Every read was made before its reply arrived: the smallest gap is the best estimate of the clock offset.
         let offset = samples

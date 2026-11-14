@@ -3,20 +3,27 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)] // tests may panic: that is how they fail
 
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use arm::Verdict;
+use duck_runtime::bench::{self, Excitation};
 use duck_runtime::bridge::{Bridge, BridgeError};
 use duck_runtime::control::{self, ChainOutcome, Exchange, Guards, Sinks};
 use duck_runtime::firmware;
-use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Sensed};
+use duck_runtime::firmware::Sensed;
+use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Term};
 use duck_runtime::record::{orientation, Recorder};
 use duck_runtime::robot::{Robot, JOINT_NAMES};
 use duck_runtime::status_led::{Colour, StatusLed};
 use rmpv::Value;
 
 const ROBOT_JSON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../firmware/config/robot.json");
+
+fn robot() -> Robot {
+    Robot::load(ROBOT_JSON).expect("robot.json")
+}
 
 /// A fake router: answers each request with `answer(method)`; `None` means "method not available".
 fn fake_router(answer: fn(&str) -> Option<Value>) -> Bridge<UnixStream> {
@@ -42,6 +49,11 @@ fn ints(v: &[i64]) -> Value {
     Value::Array(v.iter().map(|&x| Value::from(x)).collect())
 }
 
+/// A protocol 3 state reply: result, mode 0, IMU ok or not, level, every joint at `joint` tenths of a degree, the gyro.
+fn state(result: i64, imu_ok: i64, joint: i64, gyro: [i64; 3]) -> Option<Value> {
+    Some(ints(&[&[result, 0, 0, 0, -1, if imu_ok == 1 { 0 } else { 1024 }, imu_ok, 0, 0, 2][..], &[joint; 15][..], &gyro[..]].concat()))
+}
+
 /// The firmware as it answers on a bare board: bench-safe build, no servos, no IMU.
 fn bare_board(method: &str) -> Option<Value> {
     match method {
@@ -49,9 +61,9 @@ fn bare_board(method: &str) -> Option<Value> {
         "duck_status" => Some(ints(&[0, 0, 0, -1, 1024, 0, 0, 0, 0, 2])),
         "duck_joints" => Some(ints(&[-32768; 15])),
         "duck_say" => Some(Value::from(5)),
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
+        "duck_state" => state(0, 0, -32768, [-32768; 3]),
         // not armed (result 7): the targets are ignored, the state still comes back
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 1024, 0, 0, 0, 2][..], &[-32768; 15][..], &[-32768; 3][..]].concat())),
+        "duck_step" => state(7, 0, -32768, [-32768; 3]),
         _ => None,
     }
 }
@@ -60,8 +72,8 @@ fn bare_board(method: &str) -> Option<Value> {
 fn standing_robot(method: &str) -> Option<Value> {
     match method {
         "duck_joints" => Some(ints(&[5; 15])),
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-30, 0, 125][..]].concat())),
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-30, 0, 125][..]].concat())),
+        "duck_state" => state(0, 1, 5, [-30, 0, 125]),
+        "duck_step" => state(7, 1, 5, [-30, 0, 125]),
         other => bare_board(other),
     }
 }
@@ -69,8 +81,8 @@ fn standing_robot(method: &str) -> Option<Value> {
 /// As `standing_robot`, but the gyro is not reporting (stale, or its mounting is not calibrated).
 fn standing_robot_without_gyro(method: &str) -> Option<Value> {
     match method {
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-32768; 3][..]].concat())),
-        "duck_step" => Some(ints(&[&[7, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[-32768; 3][..]].concat())),
+        "duck_state" => state(0, 1, 5, [-32768; 3]),
+        "duck_step" => state(7, 1, 5, [-32768; 3]),
         other => standing_robot(other),
     }
 }
@@ -124,7 +136,7 @@ fn a_refused_call_is_an_error_not_a_value() {
 
 #[test]
 fn the_robot_file_gives_four_chains_within_rigrs_limits() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     assert_eq!(robot.joints(), JOINT_NAMES.len());
     let sizes: Vec<usize> = robot.chains.iter().map(|c| c.spec.joints()).collect();
     assert_eq!(sizes, [5, 4, 5, 1]);
@@ -148,7 +160,7 @@ fn a_wrong_joint_order_is_refused() {
 
 #[test]
 fn the_guard_clamps_to_the_joint_limit_and_limits_the_step() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let period = Duration::from_millis(20);
     let mut guards = Guards::new(&robot, period);
     let measured = vec![Some(0.0); 15];
@@ -170,7 +182,7 @@ fn the_guard_clamps_to_the_joint_limit_and_limits_the_step() {
 
 #[test]
 fn the_guard_holds_when_commands_go_stale_and_when_a_servo_is_silent() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut guards = Guards::new(&robot, Duration::from_millis(20));
     let measured = vec![Some(0.0); 15];
     let wanted = vec![0.0; 15];
@@ -194,7 +206,7 @@ fn the_guard_holds_when_commands_go_stale_and_when_a_servo_is_silent() {
 
 #[test]
 fn the_dry_run_loop_keeps_time_against_a_fake_router() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut bridge = fake_router(standing_robot);
     let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(300), Exchange::TwoReads, None, &mut Sinks::none());
     assert!(stats.ticks >= 25 && stats.ticks <= 32, "about 30 ticks in 300 ms at 100 Hz, got {}", stats.ticks);
@@ -227,7 +239,7 @@ fn one_exchange_per_tick_reads_state_and_reports_what_the_firmware_did_with_targ
     assert!(firmware::step(&mut bridge, &bad).is_err());
     assert!(firmware::step(&mut bridge, &[0.0; 14]).is_err());
 
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let stats = control::run(&mut bridge, &robot, Duration::from_millis(10), Duration::from_millis(200), Exchange::Step, None, &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.moves, stats.ticks * 4);
@@ -271,7 +283,7 @@ fn gravity_points_down_when_upright_and_forward_when_nose_up() {
 
 #[test]
 fn a_policy_that_does_not_fit_the_robot_or_the_model_is_refused() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     assert!(Policy::load(manifest(|_| ()), &robot).is_ok());
     // joints in another order
     let swapped = manifest(|d| d["joints"]["policy_order"].as_array_mut().expect("joints").swap(0, 1));
@@ -289,7 +301,7 @@ fn a_policy_that_does_not_fit_the_robot_or_the_model_is_refused() {
 #[test]
 fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
     // The tiny network: action = 0.5 * ELU(joint position relative to the default pose) + 0.1, per joint.
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut policy = Policy::load(manifest(|_| ()), &robot).expect("policy");
     let mut joints = [0.0; 15];
     joints[0] = 0.2;
@@ -321,7 +333,7 @@ fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
 
 #[test]
 fn the_action_is_clipped_before_it_is_scaled() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut policy = Policy::load(manifest(|d| d["action"]["clip"] = 0.15.into()), &robot).expect("policy");
     let mut joints = [0.0; 15];
     joints[0] = 0.2; // raw action 0.2
@@ -331,7 +343,7 @@ fn the_action_is_clipped_before_it_is_scaled() {
 
 #[test]
 fn a_missing_measurement_stops_the_policy_instead_of_becoming_a_zero() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut policy = Policy::load(manifest(|_| ()), &robot).expect("policy");
     let command = [0.0; 13];
     let mut silent = level([0.0; 15]);
@@ -349,7 +361,7 @@ fn a_missing_measurement_stops_the_policy_instead_of_becoming_a_zero() {
 
 #[test]
 fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let period = Duration::from_millis(20);
 
     // A policy that needs no gyro runs on every tick, and its targets pass the guards.
@@ -401,7 +413,7 @@ fn lit(dir: &std::path::Path) -> [bool; 3] {
 
 #[test]
 fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let leds = fake_leds("loop");
     {
         let mut sinks = Sinks { led: StatusLed::find_in(&leds), recorder: None, record_error: None };
@@ -461,9 +473,22 @@ fn text_for_the_matrix_reaches_the_firmware() {
 
 // ---------------------------------------------------------------- recording
 
+/// Every message of a recording: topic, log time, CDR bytes. Checks each is CDR.
+fn read_mcap(path: &std::path::Path) -> Vec<(String, u64, Vec<u8>)> {
+    let bytes = std::fs::read(path).expect("read back");
+    mcap::MessageStream::new(&bytes)
+        .expect("an MCAP")
+        .map(|m| {
+            let m = m.expect("a message");
+            assert_eq!(m.channel.message_encoding, "cdr");
+            (m.channel.topic.clone(), m.log_time, m.data.to_vec())
+        })
+        .collect()
+}
+
 #[test]
 fn a_recording_holds_every_tick_as_ros2_messages() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let path = std::env::temp_dir().join(format!("duck-record-{}.mcap", std::process::id()));
     let mut sinks = Sinks { led: StatusLed::none(), recorder: Some(Recorder::create(&path).expect("create")), record_error: None };
     let stats = control::run(&mut fake_router(standing_robot), &robot, Duration::from_millis(10), Duration::from_millis(100), Exchange::Step, None, &mut sinks);
@@ -471,21 +496,14 @@ fn a_recording_holds_every_tick_as_ros2_messages() {
     let recorder = sinks.recorder.take().expect("still recording");
     assert_eq!(recorder.finish().expect("finish"), stats.ticks);
 
-    let bytes = std::fs::read(&path).expect("read back");
-    let mut counts = std::collections::BTreeMap::<String, u32>::new();
-    let mut first_state: Option<Vec<u8>> = None;
-    for message in mcap::MessageStream::new(&bytes).expect("an MCAP") {
-        let message = message.expect("a message");
-        assert_eq!(message.channel.message_encoding, "cdr");
-        if message.channel.topic == "/joint_states" && first_state.is_none() {
-            first_state = Some(message.data.to_vec());
-        }
-        *counts.entry(message.channel.topic.clone()).or_default() += 1;
-    }
-    assert_eq!(counts.get("/joint_states"), Some(&stats.ticks));
-    assert_eq!(counts.get("/imu"), Some(&stats.ticks), "the IMU reports on every tick of this robot");
+    let messages = read_mcap(&path);
+    let count = |topic: &str| messages.iter().filter(|m| m.0 == topic).count();
+    let ticks = stats.ticks as usize;
+    assert_eq!(count("/joint_states"), ticks);
+    assert_eq!(count("/imu"), ticks, "the IMU reports on every tick of this robot");
     // targets go out from the second tick on (the first has nothing authorised yet)
-    assert_eq!(counts.get("/joint_commands"), Some(&(stats.ticks - 1)));
+    assert_eq!(count("/joint_commands"), ticks - 1);
+    let first_state = messages.iter().find(|m| m.0 == "/joint_states").map(|m| m.2.clone());
 
     // The first joint state: CDR header, stamp, empty frame id, fifteen names, fifteen positions of 0.5 degrees.
     let data = first_state.expect("a joint state");
@@ -517,8 +535,6 @@ fn nose_up_is_a_negative_rotation_about_y() {
 
 // ---------------------------------------------------------------- bench
 
-use duck_runtime::bench::{self, Excitation};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A bench build with the left knee armed: each step reply reads the servo 10 ms later than the last, at 2 degrees.
 static BENCH_READ_MS: AtomicU32 = AtomicU32::new(5000);
@@ -561,7 +577,7 @@ fn the_excitation_starts_and_ends_at_rest() {
 fn a_bench_run_is_recorded_with_the_servos_own_read_times() {
     let mut bridge = fake_router(bench_firmware);
     assert!(firmware::info(&mut bridge).expect("info").bench_build);
-    assert_eq!(firmware::bench_arm(&mut bridge, 3).expect("arm"), "ok");
+    assert_eq!(firmware::bench_arm(&mut bridge, 3).expect("arm"), Ok(()));
     let first = firmware::bench_step(&mut bridge, None).expect("read");
     assert_eq!((first.mode, first.joint), ("ARMED", Some(3)));
     let r = first.reading.expect("a read");
@@ -577,18 +593,12 @@ fn a_bench_run_is_recorded_with_the_servos_own_read_times() {
     let reads = recorder.bench("left_knee", &run.samples).expect("bench");
     recorder.finish().expect("finish");
     assert_eq!(reads, run.samples.len(), "every reply carried a new read");
-    let bytes = std::fs::read(&path).expect("read back");
-    let mut state_times = Vec::new();
-    let (mut commands, mut targets) = (Vec::new(), 0);
-    for message in mcap::MessageStream::new(&bytes).expect("an MCAP") {
-        let message = message.expect("a message");
-        match message.channel.topic.as_str() {
-            "/joint_states" => state_times.push(message.log_time),
-            "/joint_commands" => commands.push((message.log_time, message.data.to_vec())),
-            "/joint_targets" => targets += 1,
-            other => panic!("unexpected topic {other}"),
-        }
-    }
+    let messages = read_mcap(&path);
+    let on = |topic: &'static str| messages.iter().filter(move |m| m.0 == topic);
+    assert!(messages.iter().all(|m| ["/joint_states", "/joint_commands", "/joint_targets"].contains(&m.0.as_str())));
+    let state_times: Vec<u64> = on("/joint_states").map(|m| m.1).collect();
+    let commands: Vec<(u64, Vec<u8>)> = on("/joint_commands").map(|m| (m.1, m.2.clone())).collect();
+    let targets = on("/joint_targets").count();
     assert_eq!(targets, run.samples.len(), "every target asked for");
     assert_eq!(commands.len(), reads, "one written goal per read");
     // The command is the firmware's setpoint (2 degrees in every reply here), stamped with its read.
@@ -624,7 +634,6 @@ fn a_trainnr_export_is_read_as_trainnr_wrote_it() {
     assert_eq!(m.observation_size(), 51);
     assert_eq!(m.command_size(), 3);
     let terms: Vec<_> = m.observation.iter().map(|o| o.term).collect();
-    use duck_runtime::policy::Term;
     assert_eq!(
         terms,
         [Term::AngularVelocity, Term::ProjectedGravity, Term::JointPositions, Term::JointVelocities, Term::LastAction, Term::Command { size: 3 }]
@@ -653,7 +662,7 @@ fn a_deployment_this_runtime_cannot_honour_is_refused() {
 
 #[test]
 fn observation_terms_are_clipped_then_scaled_as_in_training() {
-    let robot = Robot::load(ROBOT_JSON).expect("robot.json");
+    let robot = robot();
     let mut policy = Policy::load(
         manifest(|d| {
             d["observations"][0]["clip"] = 0.1.into();

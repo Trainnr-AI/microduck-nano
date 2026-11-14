@@ -109,4 +109,9 @@ impl<S: Read + Write> Bridge<S> {
         };
         items.iter().map(|v| v.as_i64().ok_or(BridgeError::Shape("expected integers"))).collect()
     }
+
+    /// Call a method that returns one integer.
+    pub fn call_int(&mut self, method: &str, params: Vec<Value>) -> Result<i64, BridgeError> {
+        self.call(method, params)?.as_i64().ok_or(BridgeError::Shape("expected a whole number"))
+    }
 }

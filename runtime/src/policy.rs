@@ -2,8 +2,9 @@
 //! Running a learned policy: observation in, joint targets out.
 //!
 //! A policy is what trainnr's `export_deployment` writes: a small neural network in ONNX (`policy.onnx`) and a
-//! manifest (`deploy.json`, schema `trainnr-deploy/1`) that says exactly what its inputs and outputs mean. The manifest is checked against the model and the robot before anything runs: a policy trained
-//! for another joint order or observation layout is refused, not run.
+//! manifest (`deploy.json`, schema `trainnr-deploy/1`) that says exactly what its inputs and outputs mean. The
+//! manifest is checked against the model and the robot before anything runs: a policy trained for another joint
+//! order or observation layout is refused, not run.
 //!
 //! Inference uses `tract`, a pure-Rust ONNX runtime, so the runtime stays one static binary.
 //!
@@ -12,14 +13,13 @@
 
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
-
-use std::path::PathBuf;
 
 use serde_json::Value;
 use tract_onnx::prelude::*;
 
+use crate::firmware::Sensed;
 use crate::robot::{Robot, JOINT_NAMES};
 
 /// Joints a policy drives: every joint except the beak, in the firmware's order.
@@ -119,8 +119,9 @@ impl Manifest {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, PolicyError> {
         let path = path.as_ref();
         let file = if path.is_dir() { path.join("deploy.json") } else { path.to_path_buf() };
-        let text = fs::read_to_string(&file).map_err(|e| PolicyError::Load(format!("{}: {e}", file.display())))?;
-        let d: Value = serde_json::from_str(&text).map_err(|e| PolicyError::Load(format!("{}: {e}", file.display())))?;
+        let load = |e: &dyn fmt::Display| PolicyError::Load(format!("{}: {e}", file.display()));
+        let text = fs::read_to_string(&file).map_err(|e| load(&e))?;
+        let d: Value = serde_json::from_str(&text).map_err(|e| load(&e))?;
         Self::parse(&d, file.parent().unwrap_or(Path::new(".")))
     }
 
@@ -223,17 +224,6 @@ impl fmt::Display for PolicyError {
 
 impl std::error::Error for PolicyError {}
 
-/// What the robot measured on one tick, in the firmware's joint order. `None` means "not measured", never zero.
-#[derive(Debug, Clone, Default)]
-pub struct Sensed {
-    /// Joint angles in radians, all fifteen.
-    pub joints: Vec<Option<f64>>,
-    /// Trunk pitch (nose up positive) and roll (left side up positive) in radians, from the IMU.
-    pub pitch_roll: Option<(f64, f64)>,
-    /// Body angular velocity in rad/s.
-    pub angular_velocity: Option<[f64; 3]>,
-}
-
 /// Direction of gravity in the body frame (x forward, y left, z up) for a trunk pitched and rolled by these angles.
 /// Upright gives (0, 0, -1). The sign convention must match the simulation the policy was trained in; it is
 /// unverified against a real IMU.
@@ -242,12 +232,25 @@ pub fn projected_gravity(pitch: f64, roll: f64) -> [f64; 3] {
 }
 
 type Model = Arc<TypedRunnableModel>;
+type PerJoint = [f64; POLICY_JOINTS];
+
+/// One finite value per policy joint, or why not.
+fn per_joint(values: &[f64], what: &str) -> Result<PerJoint, PolicyError> {
+    values
+        .try_into()
+        .ok()
+        .filter(|v: &PerJoint| v.iter().all(|x| x.is_finite()))
+        .ok_or_else(|| bad(format!("{what} has {} values, expected {POLICY_JOINTS} finite numbers", values.len())))
+}
 
 /// A loaded policy, checked against the robot, with the memory it needs between ticks.
 pub struct Policy {
     manifest: Manifest,
     model: Model,
-    default_pose: [f64; POLICY_JOINTS],
+    default_pose: PerJoint,
+    /// target = base + scale * action, per joint (base: the default pose plus the action's offset).
+    base: PerJoint,
+    scale: PerJoint,
     last_action: [f64; POLICY_JOINTS],
     last_positions: Option<[f64; POLICY_JOINTS]>,
     /// How long the last inference took, in microseconds.
@@ -257,39 +260,27 @@ pub struct Policy {
 impl Policy {
     /// Load the deployment's network and check it and its manifest against `robot`.
     pub fn load(manifest: Manifest, robot: &Robot) -> Result<Self, PolicyError> {
-        let mismatch = |why: String| Err(PolicyError::Mismatch(why));
-        if manifest.joints.len() != POLICY_JOINTS
-            || manifest.joints.iter().zip(JOINT_NAMES.iter()).any(|(a, b)| a != b)
-        {
-            return mismatch(format!(
-                "the manifest's joints must be the robot's first {POLICY_JOINTS}, in order: {:?}",
-                JOINT_NAMES.get(..POLICY_JOINTS)
-            ));
+        let robot_joints: Vec<&str> = JOINT_NAMES.iter().take(POLICY_JOINTS).copied().collect();
+        if manifest.joints != robot_joints {
+            return Err(bad(format!("the manifest's joints must be the robot's first {POLICY_JOINTS}, in order: {robot_joints:?}")));
         }
-        for (what, values) in [
-            ("joints.default_pos", &manifest.default_pose),
-            ("action.scale", &manifest.action_scale),
-            ("action.offset", &manifest.action_offset),
-        ] {
-            if values.len() != POLICY_JOINTS || values.iter().any(|v| !v.is_finite()) {
-                return mismatch(format!("{what} has {} values, expected {POLICY_JOINTS} finite numbers", values.len()));
-            }
-        }
+        let default_pose = per_joint(&manifest.default_pose, "joints.default_pos")?;
+        let scale = per_joint(&manifest.action_scale, "action.scale")?;
+        let offset = per_joint(&manifest.action_offset, "action.offset")?;
         if !(manifest.control_hz.is_finite() && manifest.control_hz > 0.0) {
-            return mismatch("control.control_hz must be a positive number".into());
+            return Err(bad("control.control_hz must be a positive number"));
         }
         // The default pose must be a pose the robot can hold.
         let limits: Vec<(f64, f64)> =
             robot.chains.iter().flat_map(|c| c.spec.joints.iter().map(|j| j.travel_radians)).collect();
-        let mut default_pose = [0.0; POLICY_JOINTS];
-        for (index, (slot, &radians)) in default_pose.iter_mut().zip(&manifest.default_pose).enumerate() {
-            let Some(&(low, high)) = limits.get(index) else {
-                return mismatch("the robot has fewer joints than the policy drives".into());
-            };
-            if !radians.is_finite() || radians < low - 1e-9 || radians > high + 1e-9 {
-                return mismatch(format!("default pose of `{}` is outside its limits", JOINT_NAMES.get(index).copied().unwrap_or("?")));
+        for ((&q, name), (low, high)) in default_pose.iter().zip(robot_joints).zip(limits.into_iter().chain(std::iter::repeat((f64::NAN, f64::NAN)))) {
+            if !(q >= low - 1e-9 && q <= high + 1e-9) {
+                return Err(bad(format!("default pose of `{name}` is outside its limits")));
             }
-            *slot = radians;
+        }
+        let mut base = default_pose;
+        for (b, o) in base.iter_mut().zip(offset) {
+            *b += o;
         }
 
         let inference = |e: TractError| PolicyError::Load(e.to_string());
@@ -299,16 +290,17 @@ impl Policy {
         let input = model.model().input_fact(0).map_err(inference)?;
         let output = model.model().output_fact(0).map_err(inference)?;
         if shape(input) != Some(vec![1, manifest.observation_size()]) {
-            return mismatch(format!(
+            return Err(bad(format!(
                 "the model's input is {:?}, the manifest's observation is [1, {}]",
                 shape(input),
                 manifest.observation_size()
-            ));
+            )));
         }
         if shape(output) != Some(vec![1, POLICY_JOINTS]) {
-            return mismatch(format!("the model's output is {:?}, expected [1, {POLICY_JOINTS}]", shape(output)));
+            return Err(bad(format!("the model's output is {:?}, expected [1, {POLICY_JOINTS}]", shape(output))));
         }
-        Ok(Policy { manifest, model, default_pose, last_action: [0.0; POLICY_JOINTS], last_positions: None, last_inference_us: 0 })
+        let last_action = [0.0; POLICY_JOINTS];
+        Ok(Policy { manifest, model, default_pose, base, scale, last_action, last_positions: None, last_inference_us: 0 })
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -331,11 +323,8 @@ impl Policy {
             )));
         }
         let mut positions = [0.0; POLICY_JOINTS];
-        for (slot, measured) in positions.iter_mut().zip(&sensed.joints) {
-            *slot = measured.ok_or(PolicyError::Missing("a joint angle"))?;
-        }
-        if sensed.joints.len() < POLICY_JOINTS {
-            return Err(PolicyError::Missing("a joint angle"));
+        for (i, slot) in positions.iter_mut().enumerate() {
+            *slot = sensed.joints.get(i).copied().flatten().ok_or(PolicyError::Missing("a joint angle"))?;
         }
         // Speeds by difference from the previous tick; zero on the first tick after a reset.
         let mut velocities = [0.0; POLICY_JOINTS];
@@ -379,14 +368,12 @@ impl Policy {
         let plain = first.try_as_plain_ram().map_err(inference)?;
         let values = plain.as_slice::<f32>().map_err(inference)?;
         self.last_inference_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let mut action = [0.0; POLICY_JOINTS];
-        if values.len() != POLICY_JOINTS || values.iter().any(|x| !x.is_finite()) {
-            return Err(PolicyError::Inference("the action is not fourteen finite numbers".into()));
-        }
-        for (slot, value) in action.iter_mut().zip(values) {
-            *slot = f64::from(*value);
-        }
-        Ok(action)
+        let action: [f32; POLICY_JOINTS] = values
+            .try_into()
+            .ok()
+            .filter(|a: &[f32; POLICY_JOINTS]| a.iter().all(|x| x.is_finite()))
+            .ok_or_else(|| PolicyError::Inference(format!("the action is not {POLICY_JOINTS} finite numbers")))?;
+        Ok(action.map(f64::from))
     }
 
     /// One tick: observe, infer, and turn the action into a target for each of the robot's fifteen joints
@@ -395,13 +382,7 @@ impl Policy {
         let observation = self.observe(sensed, command, period_seconds)?;
         let action = self.infer(observation)?;
         let action = action.map(|a| self.manifest.action_clip.map_or(a, |c| a.clamp(-c, c)));
-        let m = &self.manifest;
-        let mut targets = Vec::with_capacity(JOINT_NAMES.len());
-        for (i, (a, default)) in action.iter().zip(&self.default_pose).enumerate() {
-            let scale = m.action_scale.get(i).copied().unwrap_or(0.0);
-            let offset = m.action_offset.get(i).copied().unwrap_or(0.0);
-            targets.push(default + offset + a * scale);
-        }
+        let mut targets: Vec<f64> = action.iter().zip(self.base).zip(self.scale).map(|((a, b), s)| b + s * a).collect();
         for extra in sensed.joints.iter().skip(POLICY_JOINTS) {
             targets.push(extra.ok_or(PolicyError::Missing("a joint angle"))?);
         }

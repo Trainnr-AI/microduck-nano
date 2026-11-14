@@ -13,11 +13,14 @@ the limits and the faults.
 | File | What |
 |---|---|
 | `src/bridge.rs` | Client for the board's router: MessagePack-RPC over a Unix socket |
-| `src/firmware.rs` | Typed calls to the firmware: info, status, joint angles, and the one-call-per-tick `state` and `step` |
+| `src/firmware.rs` | Typed calls to the firmware: info, status, joint angles, the one-call-per-tick `state` and `step`, the LED matrix's `say`, the bench servo |
 | `src/robot.rs` | Reads `firmware/config/robot.json` and builds rigrs joint specifications, as four chains (rigrs carries at most six joints per chain today) |
-| `src/policy.rs` | The policy runner: a manifest that says what the network's inputs and outputs mean, checks against the robot and the model, observation assembly, inference (pure-Rust `tract`), action clipping and scaling |
+| `src/policy.rs` | The policy runner: reads trainnr's `deploy.json`, checks it against the robot and the model, assembles the observation, runs inference (pure-Rust `tract`), clips and scales the action |
 | `src/control.rs` | The fixed-rate loop: read state, get targets (hold in place, or from a policy), pass them through each chain's rigrs `Guard`, account for time |
-| `src/main.rs` | `duckd`, the command-line tool |
+| `src/record.rs` | MCAP recordings of ROS 2 messages for trainnr (`--record`) |
+| `src/bench.rs` | One servo moved on the bench for system identification (`duckd bench`) |
+| `src/status_led.rs` | The board's Linux-side RGB LED as `duckd`'s status light |
+| `src/main.rs` | `duckd`, the command-line tool: one function per command |
 | `tests/runtime.rs` | Host tests against a fake router and a tiny hand-made policy (`tests/data/`); no board needed |
 
 ## Build and test

@@ -2,9 +2,10 @@
 //! Moving one servo on the bench to measure it, for system identification (`duckd bench`).
 //!
 //! Needs a bench build of the firmware (`DUCK_BENCH_MOTION 1`), which arms one joint on its own and keeps it inside
-//! that joint's limits and speed limit with the fault checks running (`firmware/app/microduck/sketch/src/duck/bench.h`).
-//! This side only chooses the targets: an excitation around wherever the servo was when armed, faded in over the
-//! first second and out over the last, so a run starts and ends at rest where it began.
+//! that joint's limits and speed limit with the fault checks running
+//! (`firmware/app/microduck/sketch/src/duck/bench.h`). This side only chooses the targets: an excitation around
+//! wherever the servo was when armed, faded in over the first second and out over the last, so a run starts and
+//! ends at rest where it began.
 
 use std::f64::consts::TAU;
 use std::io::{Read, Write};
@@ -12,9 +13,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::bridge::Bridge;
-use crate::control::STOP;
-use crate::firmware::{self, Bench};
-use crate::record::{now_ns, BenchRead, BenchSample};
+use crate::control::{Ticker, STOP};
+use crate::firmware::{self, Bench, BenchReading};
+use crate::record::now_ns;
 
 /// The shape of the motion.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +50,20 @@ impl Excitation {
     }
 }
 
+/// One tick of a bench run: the target sent and the servo's state that came back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BenchSample {
+    /// When the target was sent and the reply received, nanoseconds after the Unix epoch.
+    pub sent_ns: u64,
+    pub received_ns: u64,
+    /// The target asked for, radians.
+    pub target: f64,
+    /// The goal the firmware wrote last (after its clamp and speed limit), radians, from the same reply.
+    pub setpoint: f64,
+    /// The servo's last read in that reply, if it answered.
+    pub read: Option<BenchReading>,
+}
+
 /// How a bench run went.
 #[derive(Debug, Default)]
 pub struct BenchRun {
@@ -71,7 +86,7 @@ pub fn run<S: Read + Write>(
 ) -> BenchRun {
     let mut out = BenchRun::default();
     let begin = Instant::now();
-    let mut next = begin;
+    let mut ticker = Ticker::new(period);
     let seconds = duration.as_secs_f64();
     loop {
         let t = begin.elapsed().as_secs_f64();
@@ -84,18 +99,15 @@ pub fn run<S: Read + Write>(
         }
         let target = start + amplitude * excitation.at(t, seconds);
         let sent_ns = now_ns();
-        let reply = firmware::bench_step(bridge, Some(target));
-        let received_ns = now_ns();
-        let bench = match reply {
+        let bench = match firmware::bench_step(bridge, Some(target)) {
             Ok(b) => b,
             Err(e) => {
                 out.stopped = Some(format!("the link failed: {e}"));
                 break;
             }
         };
-        let read = bench.reading.as_ref().map(|r| BenchRead { read_ms: r.read_ms, position: r.position, velocity: r.velocity });
-        out.samples.push(BenchSample { sent_ns, received_ns, target, setpoint: bench.setpoint, read });
-        let armed = bench.mode == "ARMED";
+        out.samples.push(BenchSample { sent_ns, received_ns: now_ns(), target, setpoint: bench.setpoint, read: bench.reading });
+        let armed = bench.armed();
         if !armed {
             out.stopped = Some(format!("the firmware switched the servo off: {} ({})", bench.mode, bench.fault));
         }
@@ -103,11 +115,7 @@ pub fn run<S: Read + Write>(
         if !armed {
             break;
         }
-        next += period;
-        match next.checked_duration_since(Instant::now()) {
-            Some(wait) => std::thread::sleep(wait),
-            None => next = Instant::now(),
-        }
+        ticker.wait();
     }
     out
 }

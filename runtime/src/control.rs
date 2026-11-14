@@ -2,9 +2,9 @@
 //! The fixed-rate loop.
 //!
 //! Each tick reads the robot's state from the firmware and passes a target for every chain through its rigrs
-//! guard. This stage is a dry run: the target is "stay where you are". By default nothing is sent back to the
-//! firmware; with [`Exchange::Step`] the guarded targets are sent, which a firmware that is not armed ignores.
-//! What it measures is real: how long a round trip to the microcontroller takes and how many ticks miss their
+//! guard: a policy's targets, or "stay where you are" without one (or on a tick it cannot run). By default nothing
+//! is sent back to the firmware; with [`Exchange::Step`] the guarded targets are sent, which a firmware that is not
+//! armed ignores. It also measures how long a round trip to the microcontroller takes and how many ticks miss their
 //! deadline, which decides the control rate a policy can have.
 
 use std::io::{Read, Write};
@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use arm::{Guard, Verdict};
 
 use crate::bridge::{Bridge, BridgeError};
-use crate::firmware;
-use crate::policy::{Policy, Sensed};
+use crate::firmware::{self, Sensed};
+use crate::policy::Policy;
 use crate::record::Recorder;
 use crate::robot::Robot;
 use crate::status_led::{Colour, StatusLed};
@@ -39,6 +39,41 @@ impl Sinks {
     pub fn none() -> Self {
         Sinks { led: StatusLed::none(), recorder: None, record_error: None }
     }
+
+    /// Record a tick if a recording is open; on the first failure keep why and close it (the loop carries on).
+    fn record(&mut self, sensed: &Sensed, sent: Option<&[f64]>) {
+        if let Some(Err(e)) = self.recorder.as_mut().map(|r| r.tick(sensed, sent)) {
+            self.record_error = Some(e.to_string());
+            self.recorder = None;
+        }
+    }
+}
+
+/// A fixed-rate clock that never tries to catch up: a burst of late ticks is worse than a slow one.
+pub struct Ticker {
+    next: Instant,
+    period: Duration,
+}
+
+impl Ticker {
+    pub fn new(period: Duration) -> Self {
+        Ticker { next: Instant::now(), period }
+    }
+
+    /// Sleep until the next tick. `false` if it was already late (the clock then restarts from now).
+    pub fn wait(&mut self) -> bool {
+        self.next += self.period;
+        match self.next.checked_duration_since(Instant::now()) {
+            Some(wait) => {
+                std::thread::sleep(wait);
+                true
+            }
+            None => {
+                self.next = Instant::now();
+                false
+            }
+        }
+    }
 }
 
 /// What one chain's guard said on one tick.
@@ -49,8 +84,8 @@ pub enum ChainOutcome {
     Guarded(Verdict),
 }
 
-pub struct ChainGuard {
-    pub name: &'static str,
+struct ChainGuard {
+    name: &'static str,
     first: usize,
     joints: usize,
     guard: Guard,
@@ -143,7 +178,8 @@ impl LoopStats {
     }
 }
 
-fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
+/// The value at fraction `p` of a sorted list (nearest rank), if it has any.
+pub fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
     let last = sorted.len().checked_sub(1)?;
     let index = ((last as f64) * p).round() as usize;
     sorted.get(index.min(last)).copied()
@@ -167,21 +203,17 @@ pub fn run<S: Read + Write>(
     let mut guards = Guards::new(robot, period);
     let mut stats = LoopStats::default();
     let start = Instant::now();
-    let mut next = start;
+    let mut ticker = Ticker::new(period);
     // What the guards allowed on the previous tick, to send with this one. None until every chain has moved once.
     let mut allowed: Option<Vec<f64>> = None;
     while start.elapsed() < duration && !STOP.load(Ordering::Relaxed) {
         let tick_start = Instant::now();
         let now_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        // The targets that go out with this tick's exchange, for the recording.
-        let sending = if exchange == Exchange::Step { allowed.clone() } else { None };
-        match read_state(bridge, exchange, allowed.as_deref()) {
+        // The targets that go out with this tick's exchange (also what the recording says was sent).
+        let sending = allowed.as_deref().filter(|_| exchange == Exchange::Step);
+        match read_state(bridge, exchange, sending) {
             Ok(sensed) => {
-                let recorded = sinks.recorder.as_mut().map(|r| r.tick(&sensed, sending.as_deref()));
-                if let Some(Err(e)) = recorded {
-                    sinks.record_error = Some(e.to_string());
-                    sinks.recorder = None;
-                }
+                sinks.record(&sensed, sending);
                 let measured = &sensed.joints;
                 // Without a policy (or when it cannot run this tick) the command is: hold every joint where it is.
                 let hold = || measured.iter().map(|m| m.unwrap_or(0.0)).collect::<Vec<f64>>();
@@ -229,13 +261,8 @@ pub fn run<S: Read + Write>(
         }
         stats.round_trip_us.push(u64::try_from(tick_start.elapsed().as_micros()).unwrap_or(u64::MAX));
         stats.ticks += 1;
-        next += period;
-        match next.checked_duration_since(Instant::now()) {
-            Some(wait) => std::thread::sleep(wait),
-            None => {
-                stats.missed_deadlines += 1;
-                next = Instant::now(); // do not try to catch up: a burst of late ticks is worse than a slow one
-            }
+        if !ticker.wait() {
+            stats.missed_deadlines += 1;
         }
     }
     stats.round_trip_us.sort_unstable();
@@ -243,28 +270,20 @@ pub fn run<S: Read + Write>(
     stats
 }
 
-/// One tick's exchange with the firmware; returns what was measured.
+/// One tick's exchange with the firmware: `sending`, if any, goes out with it. Returns what was measured.
 fn read_state<S: Read + Write>(
     bridge: &mut Bridge<S>,
     exchange: Exchange,
-    allowed: Option<&[f64]>,
+    sending: Option<&[f64]>,
 ) -> Result<Sensed, BridgeError> {
-    let (status, joints, angular_velocity) = match (exchange, allowed) {
+    Ok(match (exchange, sending) {
         // The protocol 1 reads have no gyro.
-        (Exchange::TwoReads, _) => (firmware::status(bridge)?, firmware::joints(bridge)?, None),
-        (Exchange::Step, Some(targets)) => {
-            let state = firmware::step(bridge, targets)?;
-            (state.status, state.joints, state.angular_velocity)
+        (Exchange::TwoReads, _) => {
+            let pitch_roll = firmware::status(bridge)?.pitch_roll();
+            Sensed { joints: firmware::joints(bridge)?, pitch_roll, angular_velocity: None }
         }
+        (_, Some(targets)) => firmware::step(bridge, targets)?.sensed(),
         // Nothing authorised yet (or a plain read was asked for): read only.
-        (Exchange::State, _) | (Exchange::Step, None) => {
-            let state = firmware::state(bridge)?;
-            (state.status, state.joints, state.angular_velocity)
-        }
-    };
-    Ok(Sensed {
-        joints,
-        pitch_roll: status.imu_ok.then(|| (status.pitch_deg.to_radians(), status.roll_deg.to_radians())),
-        angular_velocity,
+        (_, None) => firmware::state(bridge)?.sensed(),
     })
 }
