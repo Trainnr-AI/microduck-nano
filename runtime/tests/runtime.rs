@@ -356,7 +356,7 @@ fn a_missing_measurement_stops_the_policy_instead_of_becoming_a_zero() {
     no_gyro_reading.angular_velocity = None;
     assert!(matches!(policy.act(&no_gyro_reading, &command, 0.02), Err(PolicyError::Missing("angular velocity"))));
     // and a command of the wrong length is refused
-    assert!(matches!(policy.act(&level([0.0; 15]), &[0.0; 5], 0.02), Err(PolicyError::Mismatch(_))));
+    assert!(matches!(policy.act(&level([0.0; 15]), &[0.0; 5], 0.02), Err(PolicyError::Command(_))));
 }
 
 #[test]
@@ -676,4 +676,17 @@ fn observation_terms_are_clipped_then_scaled_as_in_training() {
     joints[1] = 0.05; // inside the clip: doubled
     let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
     assert!((f64::from(obs[0]) - 0.2).abs() < 1e-6 && (f64::from(obs[1]) - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn a_command_outside_what_the_policy_was_trained_on_is_refused() {
+    let m = Manifest::load(TRAINNR_EXPORT).expect("trainnr's manifest");
+    assert!(m.check_command(&[0.2, 0.0, -0.5]).is_ok());
+    assert!(m.check_command(&[0.4, -0.3, 1.0]).is_ok(), "the ends of the ranges are inside");
+    let faster = m.check_command(&[0.5, 0.0, 0.0]).expect_err("faster than trained");
+    assert_eq!(faster.to_string(), "command refused: value 0 is 0.5; the policy was trained on -0.4 to 0.4");
+    assert!(matches!(m.check_command(&[0.0, 0.0, f64::NAN]), Err(PolicyError::Command(_))));
+    assert!(matches!(m.check_command(&[0.1, 0.0]), Err(PolicyError::Command(_))), "too few values");
+    // without stated ranges only the count and finiteness are checked
+    assert!(manifest(|_| ()).check_command(&[9.0; 13]).is_ok());
 }

@@ -199,6 +199,26 @@ impl Manifest {
     pub fn command_size(&self) -> usize {
         self.observation.iter().map(|o| if let Term::Command { size } = o.term { size } else { 0 }).sum()
     }
+
+    /// `command`, if the policy can take it: the right number of values, each finite and, where the deployment
+    /// states the ranges it was trained on (forward, sideways, turn), inside them. A policy asked for a speed it
+    /// never saw in training does something nobody has checked.
+    pub fn check_command(&self, command: &[f64]) -> Result<(), PolicyError> {
+        let refuse = |why: String| Err(PolicyError::Command(why));
+        if command.len() != self.command_size() {
+            return refuse(format!("{} values given, the policy takes {}", command.len(), self.command_size()));
+        }
+        let ranges = self.command_ranges.iter().flatten().map(Some).chain(std::iter::repeat(None));
+        for ((i, &v), range) in command.iter().enumerate().zip(ranges) {
+            if !v.is_finite() {
+                return refuse(format!("value {i} is not a number"));
+            }
+            if let Some(&(low, high)) = range.filter(|(low, high)| !(*low..=*high).contains(&v)) {
+                return refuse(format!("value {i} is {v}; the policy was trained on {low} to {high}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -206,6 +226,8 @@ pub enum PolicyError {
     Load(String),
     /// The manifest does not fit this robot or this model. Nothing is run.
     Mismatch(String),
+    /// A command the policy cannot take (wrong size, or outside what it was trained on). Nothing is run.
+    Command(String),
     /// An input the policy needs was not measured this tick. Nothing is run.
     Missing(&'static str),
     Inference(String),
@@ -216,6 +238,7 @@ impl fmt::Display for PolicyError {
         match self {
             PolicyError::Load(why) => write!(f, "cannot load the policy: {why}"),
             PolicyError::Mismatch(why) => write!(f, "the policy does not fit this robot: {why}"),
+            PolicyError::Command(why) => write!(f, "command refused: {why}"),
             PolicyError::Missing(what) => write!(f, "not measured this tick: {what}"),
             PolicyError::Inference(why) => write!(f, "inference failed: {why}"),
         }
@@ -315,13 +338,7 @@ impl Policy {
 
     /// Build the observation vector for this tick. Fails if anything the manifest asks for was not measured.
     pub fn observe(&mut self, sensed: &Sensed, command: &[f64], period_seconds: f64) -> Result<Vec<f32>, PolicyError> {
-        if command.len() != self.manifest.command_size() {
-            return Err(PolicyError::Mismatch(format!(
-                "the command has {} values, the policy takes {}",
-                command.len(),
-                self.manifest.command_size()
-            )));
-        }
+        self.manifest.check_command(command)?;
         let mut positions = [0.0; POLICY_JOINTS];
         for (i, slot) in positions.iter_mut().enumerate() {
             *slot = sensed.joints.get(i).copied().flatten().ok_or(PolicyError::Missing("a joint angle"))?;

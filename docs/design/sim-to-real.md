@@ -17,7 +17,7 @@ trainnr project: `microduck-nano` (under trainnr's data folder, not in this repo
 | 7. Export | `export_deployment` | | works: `policy.onnx` + `deploy.json` (`trainnr-deploy/1`) |
 | 8. Sim-to-sim gate | `gate_deployment` (runtime `mujoco`) | | works; reads "passed" for a policy that agrees with its evaluation even when it never walked ([trainnr#108](https://github.com/Trainnr-AI/trainnr/issues/108)) |
 | 9. Preflight | `preflight_deployment` | | works: refused the pipeline-check policy for targets 1.5 rad past a joint's range, as it should |
-| 10. On the robot | | `duckd run --policy DEPLOYMENT` | `duckd` reads the export as trainnr wrote it; on the board 0.40 ms per inference. The firmware's own limits, interlocks and faults stay underneath |
+| 10. On the robot | | `duckd run --policy DEPLOYMENT [--command FORWARD,SIDEWAYS,TURN]` | `duckd` reads the export as trainnr wrote it; on the board 0.40 ms per inference. The command is refused outside the ranges the policy was trained on. The firmware's own limits, interlocks and faults stay underneath |
 | 11. Drift | `check_drift` | `duckd run --record` | ready once 2 has real data |
 
 ## What matches already

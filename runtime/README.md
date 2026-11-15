@@ -51,6 +51,10 @@ action as `default_pos + offset + scale * action`, the control rate, and the obs
 clip and scale. The terms this robot can feed are `base_ang_vel` (the gyro), `projected_gravity`, `joint_pos_rel`,
 `joint_vel_rel`, `last_action` and `command`: exactly what trainnr's walk trains on (51 values for a walk).
 
+`duckd run --policy FOLDER --command 0.2,0,0.5` asks the policy for something (for a walk: m/s forward, m/s to
+the left, rad/s turning left; zero if not given). A command outside the ranges the deployment says the policy was
+trained on is refused.
+
 `duckd` refuses a deployment of another schema, an observation it cannot measure or one with a history, joints that
 are not the robot's or not in its order, a default pose outside the joint limits, or a network whose sizes differ
 from the manifest's. Where trainnr's format leaves a convention unstated (trainnr#106), `policy.rs` says which

@@ -30,15 +30,17 @@ usage:
       Load a policy (a trainnr deployment: its folder or deploy.json), check it against the robot, and time
       inference alone on made-up observations. Needs no firmware.
   duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy DEPLOYMENT]
-            [--record FILE.mcap] [--socket PATH]
+            [--command FORWARD,SIDEWAYS,TURN] [--record FILE.mcap] [--socket PATH]
       Run the control loop (nothing here arms the robot): read the state every tick, pass a target through the rigrs
       guards (the policy's, or hold-in-place), and report round-trip time to the microcontroller and missed deadlines.
         state      one read per tick (default; sends nothing)
         step       one exchange per tick: the guarded hold-in-place targets go out, the state comes back.
                    The firmware ignores targets unless it is armed.
         two-reads  status and joints as two calls (firmware protocol 1; no gyro)
-      With --policy the targets come from the policy (zero command) instead of hold-in-place; the loop runs at the
-      policy's rate. A tick on which an input the policy needs was not measured holds instead.
+      With --policy the targets come from the policy instead of hold-in-place; the loop runs at the policy's rate.
+      A tick on which an input the policy needs was not measured holds instead. --command is what the policy is
+      asked to do (for a walk: m/s forward, m/s to the left, rad/s turning left), zero if not given; it is refused
+      outside the ranges the policy was trained on.
       The board's LED1 shows each tick: green = holding in place, blue = the policy drove the targets,
       yellow = the policy could not run (an input was missing), red = the exchange failed; off when duckd exits.
       With --record, every tick's measured joints, sent targets and IMU go into an MCAP file (ROS 2 messages) that
@@ -83,6 +85,8 @@ struct Args {
     supervised: bool,
     /// `duckd say`'s text.
     text: Option<String>,
+    /// `duckd run --command`: what the policy is asked to do.
+    walk: Option<Vec<f64>>,
 }
 
 const CHIRP: (&str, Excitation) = ("chirp", Excitation::Chirp { from_hz: 0.1, to_hz: 2.0 });
@@ -103,7 +107,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     };
     let mut args = Args { command, socket: ROUTER_SOCKET.into(), robot: None, hz: None, seconds: 10.0, count: 200,
         exchange: Exchange::State, policy: None, record: None, joint: None, excite: CHIRP, amplitude_deg: 10.0,
-        supervised: false, text: None };
+        supervised: false, text: None, walk: None };
     while let Some(flag) = argv.next() {
         if flag == "--supervised" {
             args.supervised = true;
@@ -128,6 +132,10 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--seconds" => args.seconds = number(&flag, value)?,
             "--count" => args.count = number(&flag, value)?,
             "--amplitude" => args.amplitude_deg = number(&flag, value)?,
+            "--command" => {
+                let values = value.split(',').map(|v| number(&flag, v.trim().to_string())).collect::<Result<_, _>>()?;
+                args.walk = Some(values);
+            }
             "--exchange" => {
                 args.exchange = match value.as_str() {
                     "state" => Exchange::State,
@@ -293,7 +301,15 @@ fn run(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         .into());
     }
     let hz = policy.as_ref().map_or(args.hz.unwrap_or(50.0), |p| p.manifest().control_hz);
-    let command = vec![0.0; policy.as_ref().map_or(0, |p| p.manifest().command_size())];
+    let command = match (&policy, &args.walk) {
+        (Some(p), walk) => {
+            let command = walk.clone().unwrap_or_else(|| vec![0.0; p.manifest().command_size()]);
+            p.manifest().check_command(&command)?;
+            command
+        }
+        (None, Some(_)) => return Err("--command needs --policy".into()),
+        (None, None) => Vec::new(),
+    };
     let period = Duration::from_secs_f64(1.0 / hz);
     println!(
         "robot: {} joints in {} chains, {} with a servo ID; loop {hz} Hz for {} s",
@@ -303,7 +319,7 @@ fn run(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         args.seconds
     );
     if let Some(p) = &policy {
-        println!("policy `{}`, zero command", p.manifest().name);
+        println!("policy `{}`, command {command:?}", p.manifest().name);
     }
     stop_on_signal(true)?;
     let led = StatusLed::find();
