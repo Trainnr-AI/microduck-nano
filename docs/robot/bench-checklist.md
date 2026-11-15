@@ -57,8 +57,9 @@ are powered.
 
 **D. First motion (motion build: `DUCK_ENABLE_MOTION 1`), robot held in a stand or by a second person, feet off the floor**
 
-13. **Not before** the firmware has the design's right-leg hip map and its both-legs rule (handoff, "What to do
-   next" 3): today's firmware mirrors the left leg's map. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
+13. **Not before** the firmware has the design's new limits (handoff, "What to do next" 3): the right leg's own
+   hip map, the both-legs rule, the knee x ankle interlock and the ankle-dependent hip cells. Today's firmware
+   mirrors the left leg's map and has none of the others. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
 14. Move one joint at a time through small targets; watch `duck_setpoints` against `duck_joints` and the sign of each
     joint. Check goal speed 0 behaves as "fast" and the rate limit feels sane; lower `max_speed_dps` if not.
 15. Drive each joint to both limits slowly and look for contact before the limit. Try the head roll / yaw interlock and
