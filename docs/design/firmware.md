@@ -82,14 +82,18 @@ Call them from Python with `duck_client.Duck(Bridge)`, or directly: `Bridge.call
 
 | Function | Returns | Notes |
 |---|---|---|
-| `duck_info` | protocol, motion build, EEPROM build, joint table ready, IMU present, servo UART is Serial1 | |
+| `duck_info` | protocol, motion build, EEPROM build, joint table ready, IMU present, servo UART is Serial1, bench build | the last word is absent from firmware before the bench build existed |
 | `duck_status` | mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, balance x10, worst tick (us) | |
-| `duck_state` | 25 integers | protocol 2. Everything a control tick needs in one reply: result (0), mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, worst tick in us, then 15 measured angles (degrees x10, -32768 = no answer) |
-| `duck_step(15 integers)` | 25 integers, as `duck_state` | protocol 2. One control tick in one round trip: targets in degrees x10, same path as `duck_set_targets` (safety layer, ignored unless armed); `result` says what happened |
+| `duck_state` | 28 integers | protocol 3. Everything a control tick needs in one reply: result (0), mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, worst tick in us, then 15 measured angles (degrees x10, -32768 = no answer), then the body angular velocity about x (forward), y (left), z (up) in degrees per second x10 (-32768 each when the gyro is absent, stale, or the IMU's mounting is not calibrated). Protocol 2 was the same without the gyro |
+| `duck_step(15 integers)` | 28 integers, as `duck_state` | protocol 3. One control tick in one round trip: targets in degrees x10, same path as `duck_set_targets` (safety layer, ignored unless armed); `result` says what happened |
 | `duck_joints` / `duck_setpoints` | 15 angles, degrees x10 | measured (-32768 = no answer) / commanded after the safety layer |
 | `duck_health` | 15 x (load 0.1 %, voltage 0.1 V, temperature degC) | |
 | `duck_ping(id)`, `duck_scan(first, last)`, `duck_read(id, addr, n)` | bus result / IDs found / register bytes | read-only bench tools; refused while armed |
 | `duck_set_echo(on)` | | for an adapter that echoes transmitted bytes |
+| `duck_bench_arm(key, joint)` | result | bench build only (`DUCK_BENCH_MOTION 1`). Arms ONE joint's servo on its own, for measuring it: its own table entry must be calibrated, the robot must be disarmed. Refused with "busy" while the robot is armed; `duck_arm` is refused while a bench servo is armed. See `src/duck/bench.h` |
+| `duck_bench_step(target x10)` | 12 integers | bench build only. The joint's target in degrees x10 (-32768: just read), clamped to its limits and rate-limited to its `max_speed_dps`; back: result, mode (off / armed / fault), fault, joint, read ok, position x10, the servo's speed in deg/s x10, load 0.1 % (a duty cycle, not a torque), voltage 0.1 V, temperature C, the millisecond the servo was read, setpoint x10. No target for the command timeout: torque off |
+| `duck_bench_disarm()` | 0 | bench build only. Torque off, a latched bench fault forgotten. `duck_disarm` does this too |
+| `duck_say(text)` | characters kept | protocol 3. Text for the LED matrix, up to 32 characters; shown for 3 s after the last call (two passes if it scrolls), a fault always wins. See [status-lights.md](../robot/status-lights.md) |
 | `duck_heartbeat` | mode | send at 5 Hz or faster while commanding |
 | `duck_arm(key)`, `duck_disarm`, `duck_clear_fault` | result code | key = `0xD0C5A4B3` |
 | `duck_stand(supported)`, `duck_sit` | result code | `supported = true`: robot held off the floor, balance and fall detection off during the move |

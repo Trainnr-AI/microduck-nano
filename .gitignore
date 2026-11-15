@@ -15,3 +15,6 @@ benchmarks/**/_work/
 *.onnx
 *.gguf
 *.pt
+
+# The tiny test policy is a fixture, not a model download
+!runtime/tests/data/*.onnx

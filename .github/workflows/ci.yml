@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    paths: ["firmware/**", "runtime/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["firmware/**", "runtime/**", ".github/workflows/ci.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generated config header is up to date
+        run: python3 firmware/tools/gen_config.py --check
+      - name: Unit tests (host build of the firmware core)
+        run: make -C firmware/tests test
+
+  runtime:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tests
+        run: cargo test --locked
+      - name: Lints (warnings are errors)
+        run: cargo clippy --all-targets --locked -- -D warnings

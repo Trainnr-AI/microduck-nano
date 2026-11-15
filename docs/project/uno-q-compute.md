@@ -47,7 +47,8 @@ the link to the microcontroller is (115200 baud, about 256-byte messages).
 
 - 8-bit quantization about doubles the speed. The 8-bit models here were calibrated on random images: the timing is
   valid, the detections are not. A real model needs calibrating on real images and its accuracy checking.
-- Peak memory of the benchmark process: 154 MB.
+- Peak memory of the benchmark process: 154 MB. The `peak_rss_mb` of each row in `onnx.json` is `ru_maxrss`, the
+  process's running peak, so every row after the first is the peak so far, not that model's own.
 - ncnn on the CPU runs the float models faster than ONNX Runtime does (next table): 43 ms against 87 ms at 224 px.
 
 ## Vision: CPU against GPU (ncnn, float models)

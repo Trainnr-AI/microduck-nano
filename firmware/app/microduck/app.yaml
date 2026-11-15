@@ -1,0 +1,3 @@
+name: Microduck Nano
+icon: 🦆
+description: Microduck Nano firmware - servo bus, IMU, limits and interlocks on the microcontroller; status and commands from Linux. Starts disarmed.

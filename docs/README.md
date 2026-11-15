@@ -9,12 +9,14 @@ work, and dated project records.
 |---|---|
 | [build-and-flash.md](robot/build-and-flash.md) | Reaching the Arduino UNO Q, building and flashing the firmware, the wiring it assumes, things that went wrong |
 | [bench-checklist.md](robot/bench-checklist.md) | The first steps with real servos, the IMU and power. None of it has been done yet |
+| [status-lights.md](robot/status-lights.md) | What the board's LED matrix and RGB LEDs say: text, servos, IMU, safety mode, the link, `duckd` |
 
 ## `design/`: how it works
 
 | Page | What |
 |---|---|
 | [firmware.md](design/firmware.md) | Which processor does what, the safety model, the functions between the two sides, servo registers |
+| [sim-to-real.md](design/sim-to-real.md) | The pipeline from trainnr to the robot: each stage, its tool, what works and what is blocked |
 
 ## `project/`: dated records
 
@@ -22,6 +24,7 @@ These describe the state on their date and are expected to go stale.
 
 | Page | What |
 |---|---|
+| [handoff-2026-11-15.md](project/handoff-2026-11-15.md) | For whoever continues on another machine: the test board's state, what is not in the repository, decisions, next steps |
 | [roadmap.md](project/roadmap.md) | What works today, what is designed, what comes next |
 | [design-review-2026-11-14.md](project/design-review-2026-11-14.md) | Independent review of the mechanical design: PASS / FAIL per check, safety findings |
 | [uno-q-compute.md](project/uno-q-compute.md) | What the UNO Q can run: policies, vision, language models, CPU against GPU |
