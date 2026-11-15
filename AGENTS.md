@@ -48,12 +48,13 @@ Body and head shells are scaled copies of XGO-Duck STLs. XGO-Duck's hardware rep
 
 ## When trainnr lacks a feature or has a bug
 
-Fix it upstream; do not work around it here.
+Report it upstream; do not work around it here. trainnr is used through its MCP tools only: do not clone it or
+change its code (the owner's decision, 2026-11-15).
 
-1. Open an issue in this repository describing the gap, and one in `Trainnr-AI/trainnr`.
-2. Make the change in the trainnr checkout on its own branch, one change per pull request.
-3. Follow trainnr's `AGENTS.md`: sign off commits (`git commit -s`), Conventional Commit titles, docs and a `CHANGELOG.md` line in the same pull request, run the gates for what was touched (`tools/verify.sh` lists them).
-4. Ask before pushing or opening the pull request.
+1. Open an issue in `Trainnr-AI/trainnr` describing the general feature or bug (for everyone who uses trainnr, not
+   only this robot), with what you saw and how to see it again. Search its issues first.
+2. If it blocks work here, open an issue in this repository that links to it, and say so where the work is
+   recorded (roadmap, handoff, `docs/design/sim-to-real.md`).
 
 ## Rules for this repository
 
