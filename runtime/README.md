@@ -57,8 +57,9 @@ trained on is refused.
 
 `duckd` refuses a deployment of another schema, an observation it cannot measure or one with a history, joints that
 are not the robot's or not in its order, a default pose outside the joint limits, or a network whose sizes differ
-from the manifest's. Where trainnr's format leaves a convention unstated (trainnr#106), `policy.rs` says which
-reading it takes. Checked on the board on 2026-11-15 with a real export (a 50-iteration pipeline check on Pollen's
+from the manifest's. It reads `deploy.json` as trainnr specifies it (trainnr's docs/87, written for trainnr#106):
+observations scaled then clipped, `target = default_pos + scale * action` with `action.offset` equal to the default
+pose, the rate from `physics_timestep_s * decimation`, and any key or observation source it does not know refused. Checked on the board on 2026-11-15 with a real export (a 50-iteration pipeline check on Pollen's
 microduck, whose joints match ours): loaded and checked, 0.40 ms per inference. On a tick where something the policy needs was not measured
 (a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
 
