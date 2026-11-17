@@ -142,9 +142,9 @@ impl Guards {
 pub enum Exchange {
     /// Two reads, `duck_status` then `duck_joints` (firmware protocol 1).
     TwoReads,
-    /// One read, `duck_state` (protocol 3). The only exchanges that carry the gyro.
+    /// One read, `duck_state` (protocol 4). With `Step`, the only exchanges that carry the gyro and joint speeds.
     State,
-    /// One exchange, `duck_step`: send the previous tick's guarded targets, get the state back (protocol 3).
+    /// One exchange, `duck_step`: send the previous tick's guarded targets, get the state back (protocol 4).
     Step,
 }
 
@@ -277,10 +277,10 @@ fn read_state<S: Read + Write>(
     sending: Option<&[f64]>,
 ) -> Result<Sensed, BridgeError> {
     Ok(match (exchange, sending) {
-        // The protocol 1 reads have no gyro.
+        // The protocol 1 reads have no gyro and no joint speeds.
         (Exchange::TwoReads, _) => {
             let pitch_roll = firmware::status(bridge)?.pitch_roll();
-            Sensed { joints: firmware::joints(bridge)?, pitch_roll, angular_velocity: None }
+            Sensed { joints: firmware::joints(bridge)?, pitch_roll, ..Sensed::default() }
         }
         (_, Some(targets)) => firmware::step(bridge, targets)?.sensed(),
         // Nothing authorised yet (or a plain read was asked for): read only.

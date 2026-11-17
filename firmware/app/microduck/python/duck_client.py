@@ -88,7 +88,7 @@ class Duck:
         return {n: _angle(x) for n, x in zip(JOINTS, self._b.call("duck_joints"))}
 
     def state(self):
-        """Everything a control tick needs in one call (firmware protocol 3)."""
+        """Everything a control tick needs in one call (firmware protocol 4; 3 has no joint speeds)."""
         v = self._b.call("duck_state")
         return self._state(v)
 
@@ -102,12 +102,16 @@ class Duck:
 
     @staticmethod
     def _state(v):
-        gyro = v[10 + len(JOINTS):]  # empty from a protocol 2 firmware
+        n = len(JOINTS)
+        gyro = v[10 + n:13 + n]  # empty from a protocol 2 firmware
+        sp = v[13 + n:13 + 2 * n]  # empty before protocol 4
         return {
             "result": _name(RESULTS, v[0]), **_status_words(v[1:9]), "worst_tick_us": v[9],
             "joints": {n: _angle(x) for n, x in zip(JOINTS, v[10:10 + len(JOINTS)])},
             # body frame (x forward, y left, z up), deg/s; None when the gyro is not measured
             "gyro_dps": (None if len(gyro) != 3 or _MISSING in gyro else [x / 10 for x in gyro]),
+            # each joint's speed as its servo reported it, deg/s (protocol 4; None where not answered or older firmware)
+            "speeds_dps": {j: (sp[i] / 10 if i < len(sp) and sp[i] != _MISSING else None) for i, j in enumerate(JOINTS)},
         }
 
     def setpoints(self):

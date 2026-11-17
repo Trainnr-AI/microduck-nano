@@ -233,6 +233,12 @@ static void test_joint_conversion() {
   CHECK(deg_to_step(c, kHeadYaw, 150.0f) == 1023);
   CHECK(deg_to_step(c, kHeadYaw, -150.0f) == 0);
   CHECK(deg_to_step(c, kBeak, NAN) == deg_to_step(c, kBeak, 0.0f));
+  // A servo's speed report (steps/s) as the joint's speed in deg/s, in the joint's direction.
+  c.joints[kLKnee].direction = 1;
+  c.joints[kRKnee].direction = -1;
+  CHECK_NEAR(speed_to_dps(c, kLKnee, 341), 100.0f, 0.01f);
+  CHECK_NEAR(speed_to_dps(c, kRKnee, 341), -100.0f, 0.01f);
+  CHECK_NEAR(speed_to_dps(c, kLKnee, -34), -9.97f, 0.01f);
   CHECK(!config_ready_for_motion(kRobotConfig));           // shipped placeholders
   CHECK(config_ready_for_motion(c));
   c.joints[3].servo_id = c.joints[4].servo_id;

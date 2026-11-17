@@ -252,8 +252,8 @@ fn time(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         ("duck_info", 7, vec![]),
         ("duck_status", 10, vec![]),
         ("duck_joints", 15, vec![]),
-        ("duck_state", 28, vec![]),
-        ("duck_step", 28, zeros()),
+        ("duck_state", 43, vec![]),
+        ("duck_step", 43, zeros()),
         ("duck_health", 45, vec![]),
     ] {
         // A failed call is counted, not fatal: how often the link drops a reply is part of what this measures.
@@ -286,6 +286,7 @@ fn policy_time(args: &Args) -> Res {
             joints: (0..JOINT_NAMES.len()).map(|j| Some(0.05 * (phase + j as f64).sin())).collect(),
             pitch_roll: Some((0.02 * phase.sin(), 0.02 * phase.cos())),
             angular_velocity: Some([0.1 * phase.sin(), 0.1 * phase.cos(), 0.0]),
+            joint_speeds: (0..JOINT_NAMES.len()).map(|j| Some(0.25 * (phase + j as f64).cos())).collect(),
         };
         policy.act(&sensed, &command, period)?;
         times.push(policy.last_inference_us);

@@ -24,7 +24,7 @@ using rpc::tenths;
 
 namespace {
 
-constexpr int32_t kProtocolVersion = 3;  // 3: the state message carries the gyro
+constexpr int32_t kProtocolVersion = 4;  // 3: the state message carries the gyro; 4: and each joint's speed
 
 // Fixed-size arrays only: on older UNO Q cores a sketch cannot link the parts of the C++ library that std::vector's
 // size checks pull in.
@@ -36,7 +36,7 @@ typedef std::array<int32_t, 33> ScanResult;  // [count, id, id, ...]
 typedef std::array<int32_t, 10> ReadResult;  // [bus error, count, byte, ...]
 typedef std::array<float, duck::kNumJoints> Targets;
 typedef std::array<int32_t, duck::kNumJoints> TargetWords;          // degrees x10
-typedef std::array<int32_t, 10 + duck::kNumJoints + 3> StateWords;  // see state_words()
+typedef std::array<int32_t, 10 + duck::kNumJoints + 3 + duck::kNumJoints> StateWords;  // see state_words()
 
 // ----------------------------------------------------------------- reads
 
@@ -72,9 +72,11 @@ JointWords rpc_joints() {
 // [result, mode, posture, fault, fault joint, flags, imu ok, pitch x10, roll x10, worst tick in us,
 //  then one measured joint angle per joint, degrees x10, kMissing where the servo did not answer,
 //  then the body angular velocity about x (forward), y (left), z (up), degrees per second x10, kMissing each when the
-//  gyro is not measured (absent, stale, or the IMU's mounting not calibrated)].
-// `result` is the duck::Result of the command this reply answers (0 for a plain read). Protocol 3; protocol 2 was
-// the same without the last three words.
+//  gyro is not measured (absent, stale, or the IMU's mounting not calibrated),
+//  then each joint's speed as its servo reported it in the same read as the angle, degrees per second x10, kMissing
+//  where the servo did not answer].
+// `result` is the duck::Result of the command this reply answers (0 for a plain read). Protocol 4; protocol 3 was
+// the same without the speeds, protocol 2 without the gyro either.
 StateWords state_words(int32_t result) {
   const duck::Status s = g_ctl.status();
   StateWords out;
@@ -84,6 +86,8 @@ StateWords state_words(int32_t result) {
   int32_t* joints = out.data() + 2 + rpc::kStatusWords;
   for (int j = 0; j < duck::kNumJoints; ++j) joints[j] = joint_word(j);
   for (int i = 0; i < 3; ++i) joints[duck::kNumJoints + i] = s.gyro_ok ? tenths(s.gyro_dps[i]) : kMissing;
+  int32_t* speeds = joints + duck::kNumJoints + 3;
+  for (int j = 0; j < duck::kNumJoints; ++j) speeds[j] = rpc::speed_word(j);
   return out;
 }
 static_assert(2 + rpc::kStatusWords == 10, "the state message's joints start at word 10");

@@ -103,15 +103,18 @@ fn ints(v: &[i64]) -> Value {
     Value::Array(v.iter().map(|&x| Value::from(x)).collect())
 }
 
-/// A protocol 3 state reply: result, mode 0, IMU ok or not, level, every joint at `joint` tenths of a degree, the gyro.
+/// A protocol 4 state reply: result, mode 0, IMU ok or not, level, every joint at `joint` tenths of a degree, the gyro,
+/// then every joint's speed: 2.0 deg/s where the joint answered.
 fn state(result: i64, imu_ok: i64, joint: i64, gyro: [i64; 3]) -> Option<Value> {
-    Some(ints(&[&[result, 0, 0, 0, -1, if imu_ok == 1 { 0 } else { 1024 }, imu_ok, 0, 0, 2][..], &[joint; 15][..], &gyro[..]].concat()))
+    let speed = if joint == -32768 { -32768 } else { 20 };
+    let head = [result, 0, 0, 0, -1, if imu_ok == 1 { 0 } else { 1024 }, imu_ok, 0, 0, 2];
+    Some(ints(&[&head[..], &[joint; 15][..], &gyro[..], &[speed; 15][..]].concat()))
 }
 
 /// The firmware as it answers on a bare board: bench-safe build, no servos, no IMU.
 fn bare_board(method: &str) -> Option<Value> {
     match method {
-        "duck_info" => Some(ints(&[3, 0, 0, 0, 0, 1])),
+        "duck_info" => Some(ints(&[4, 0, 0, 0, 0, 1])),
         "duck_status" => Some(ints(&[0, 0, 0, -1, 1024, 0, 0, 0, 0, 2])),
         "duck_joints" => Some(ints(&[-32768; 15])),
         "duck_say" => Some(Value::from(5)),
@@ -141,28 +144,32 @@ fn standing_robot_without_gyro(method: &str) -> Option<Value> {
     }
 }
 
-/// The firmware before the gyro: a 25-word state message.
-fn protocol_2_firmware(method: &str) -> Option<Value> {
+/// The firmware before joint speeds: a 28-word state message (protocol 3).
+fn protocol_3_firmware(method: &str) -> Option<Value> {
     match method {
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[0; 3][..]].concat())),
         other => standing_robot(other),
     }
 }
 
 #[test]
-fn the_gyro_arrives_in_radians_per_second_or_not_at_all() {
+fn the_gyro_and_joint_speeds_arrive_in_radians_per_second_or_not_at_all() {
     let state = firmware::state(&mut fake_router(standing_robot)).expect("state");
     let w = state.angular_velocity.expect("gyro");
     let expect = [-3.0f64.to_radians(), 0.0, 12.5f64.to_radians()];
     assert!(w.iter().zip(expect).all(|(a, b)| (a - b).abs() < 1e-12), "{w:?}");
     assert_eq!(state.joints.len(), 15);
     assert!(state.joints.iter().all(|j| j.is_some_and(|r| (r - 0.5f64.to_radians()).abs() < 1e-12)));
+    assert_eq!(state.joint_speeds.len(), 15);
+    assert!(state.joint_speeds.iter().all(|s| s.is_some_and(|w| (w - 2f64.to_radians()).abs() < 1e-12)));
 
     let state = firmware::state(&mut fake_router(standing_robot_without_gyro)).expect("state");
     assert_eq!(state.angular_velocity, None, "a missing gyro is not a zero");
+    let state = firmware::state(&mut fake_router(bare_board)).expect("state");
+    assert!(state.joint_speeds.iter().all(Option::is_none), "a servo that did not answer has no speed, not zero");
 
-    let old = firmware::state(&mut fake_router(protocol_2_firmware));
-    assert!(matches!(old, Err(BridgeError::Shape(why)) if why.contains("protocol 2")));
+    let old = firmware::state(&mut fake_router(protocol_3_firmware));
+    assert!(matches!(old, Err(BridgeError::Shape(why)) if why.contains("needs 4")));
 }
 
 #[test]
@@ -318,7 +325,7 @@ fn no_gyro(d: &mut serde_json::Value) {
 }
 
 fn level(joints: [f64; 15]) -> Sensed {
-    Sensed { joints: joints.iter().map(|&j| Some(j)).collect(), pitch_roll: Some((0.0, 0.0)), angular_velocity: Some([0.0; 3]) }
+    Sensed { joints: joints.iter().map(|&j| Some(j)).collect(), pitch_roll: Some((0.0, 0.0)), angular_velocity: Some([0.0; 3]), ..Sensed::default() }
 }
 
 #[test]
@@ -384,6 +391,22 @@ fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
     let obs = policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe");
     assert_eq!(obs[14], 0.0);
     assert_eq!(obs[28], 0.0);
+}
+
+#[test]
+fn the_policy_takes_joint_speeds_from_the_servos_when_they_report_them() {
+    let robot = robot();
+    let mut policy = Policy::load(manifest(|_| ()), &robot).expect("policy");
+    let mut sensed = level([0.0; 15]);
+    sensed.joint_speeds = (0..15).map(|j| Some(0.1 * j as f64)).collect();
+    // Even on the first tick, when there is nothing to difference against.
+    let obs = policy.observe(&sensed, &[0.0; 3], 0.02).expect("observe");
+    assert!((0..14).all(|j| (f64::from(obs[14 + j]) - 0.1 * j as f64).abs() < 1e-6), "{:?}", &obs[14..28]);
+    // A joint whose servo gave no speed falls back to the difference from the previous tick.
+    sensed.joint_speeds[3] = None;
+    sensed.joints[3] = Some(0.01);
+    let obs = policy.observe(&sensed, &[0.0; 3], 0.02).expect("observe");
+    assert!((f64::from(obs[14 + 3]) - 0.5).abs() < 1e-5, "0.01 rad in 0.02 s: {}", obs[17]);
 }
 
 #[test]
@@ -584,10 +607,15 @@ fn a_recording_holds_every_tick_as_ros2_messages() {
     assert_eq!(u32_at(20), 15, "one name per joint");
     let name_len = u32_at(24) as usize;
     assert_eq!(&data[28..28 + name_len - 1], b"left_hip_yaw");
-    let tail = &data[data.len() - 8 * 15 - 8..];
-    let positions: Vec<f64> = tail[..8 * 15].chunks(8).map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes"))).collect();
+    // From the end: effort (empty), fifteen velocities, their length and padding to 8 bytes, fifteen positions.
+    let f64s = |bytes: &[u8]| bytes.chunks(8).map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes"))).collect::<Vec<f64>>();
+    let end = data.len() - 4;
+    assert_eq!(&data[end..], &[0u8; 4], "effort is empty");
+    let velocities = f64s(&data[end - 8 * 15..end]);
+    assert!(velocities.iter().all(|v| (v - 2f64.to_radians()).abs() < 1e-12), "the servos' own speeds: {velocities:?}");
+    assert_eq!(u32_at(end - 8 * 15 - 8), 15, "one velocity per joint");
+    let positions = f64s(&data[end - 8 * 15 - 8 - 8 * 15..end - 8 * 15 - 8]);
     assert!(positions.iter().all(|p| (p - 0.5f64.to_radians()).abs() < 1e-12), "{positions:?}");
-    assert_eq!(&tail[8 * 15..], &[0u8; 8], "velocity and effort are empty");
     // DUCK_KEEP_RECORDING=<path> keeps a copy, to check the file with another MCAP / ROS 2 reader.
     if let Ok(keep) = std::env::var("DUCK_KEEP_RECORDING") {
         std::fs::copy(&path, keep).expect("keep a copy");

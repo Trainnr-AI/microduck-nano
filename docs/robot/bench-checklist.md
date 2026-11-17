@@ -44,7 +44,9 @@ are powered.
    - go back to the default build (both switches 0) and confirm `duck_info` reports motion 0, bench 0.
    The recordings carry the targets asked for, the goals the firmware wrote after its clamp and speed limit (what
    the servo was told: fit against these), and every read of the servo (position, its own speed report), stamped
-   when it was read. trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
+   when it was read. Check the speed report's unit with them: the servo's speed against the change of its position
+   between reads (`duck_state` and the policy take register 58 as steps/s; if it is not, fix `speed_to_dps` in
+   `robot_config.cpp` before any policy runs). trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 

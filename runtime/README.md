@@ -63,9 +63,15 @@ pose, the rate from `physics_timestep_s * decimation`, and any key or observatio
 microduck, whose joints match ours): loaded and checked, 0.40 ms per inference. On a tick where something the policy needs was not measured
 (a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
 
-`angular_velocity` comes from the gyro in the firmware's state message (protocol 3), in the body frame (x forward,
+`angular_velocity` comes from the gyro in the firmware's state message (protocol 4), in the body frame (x forward,
 y left, z up) after the IMU's mounting matrix in `robot.json`. It is "not measured" until that matrix is calibrated,
 and with `--exchange two-reads`, which has no gyro. `duckd run` refuses `state` and `step` against an older firmware.
+
+`joint_vel_rel` comes from each servo's own speed report, read with its angle and carried in the same state message
+(protocol 4); it is also recorded as `/joint_states` velocity. Where a servo gave none (`two-reads`), the speed is
+the difference from the previous tick. The speed register's unit (steps/s) is unconfirmed on a real SCS0009: bench
+checklist 8b checks it before a policy relies on it. The 15 extra words cost about 1.2 ms an exchange at 460800
+(`duck_step` 5.7 to 6.9 ms; a 50 Hz tick's exchange 4.0 to 5.2 ms, bare board, 2026-11-17).
 
 The gap before a real policy can run: the sign conventions of `projected_gravity` and `angular_velocity` are unchecked
 against both a real IMU and the training simulation.

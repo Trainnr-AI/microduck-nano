@@ -44,7 +44,7 @@ tools connect.
 - The servo settings a policy assumes. Since trainnr#107 (fixed 2026-11-15) a deployment for a servo robot carries
   `joints.servos`: the supply voltage and the position-gain register value the servo model was fitted at. `duckd`
   does not yet check them against the firmware; it matters once an SCS0009 model exists (stage 3).
-- Joint velocity: trainnr's walk observes it; the firmware reports no speed for the robot's loop (the bench mode
-  does), so `duckd` differences positions. Armed, each joint is read at 50 Hz (8 servos a tick), so each policy
-  tick sees a fresh angle; differencing two 20 ms-apart readings of a 0.3-degree encoder is still coarse.
+- Joint velocity: trainnr's walk observes it. Since protocol 4 the firmware passes each servo's own speed report
+  (read with its angle, every joint at 50 Hz armed) and `duckd` feeds that to the policy. Its unit is unconfirmed
+  until bench checklist 8b compares it with the recorded positions.
 - A GPU for real training runs (trainnr can train on a rented cloud GPU).

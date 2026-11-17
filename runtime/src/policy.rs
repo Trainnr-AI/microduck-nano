@@ -362,12 +362,12 @@ impl Policy {
         for (i, slot) in positions.iter_mut().enumerate() {
             *slot = sensed.joints.get(i).copied().flatten().ok_or(PolicyError::Missing("a joint angle"))?;
         }
-        // Speeds by difference from the previous tick; zero on the first tick after a reset.
+        // Each joint's speed as its servo reported it. Without that report (an exchange that carries none), by
+        // difference from the previous tick, zero on the first tick after a reset.
         let mut velocities = [0.0; POLICY_JOINTS];
-        if let Some(previous) = self.last_positions {
-            for ((v, now), before) in velocities.iter_mut().zip(&positions).zip(&previous) {
-                *v = (now - before) / period_seconds;
-            }
+        for (i, v) in velocities.iter_mut().enumerate() {
+            let differenced = self.last_positions.and_then(|previous| Some((positions.get(i)? - previous.get(i)?) / period_seconds));
+            *v = sensed.joint_speeds.get(i).copied().flatten().or(differenced).unwrap_or(0.0);
         }
         let mut obs: Vec<f32> = Vec::with_capacity(self.manifest.observation_size());
         let mut command = command.iter();
