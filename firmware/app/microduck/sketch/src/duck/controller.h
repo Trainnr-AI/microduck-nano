@@ -124,7 +124,7 @@ class Controller {
   BusError write_goals(const uint16_t steps[kNumJoints]);
   bool imu_usable(const ImuSample& imu, uint32_t now_ms) const;
   bool gyro_usable(const ImuSample& imu, uint32_t now_ms) const;
-  void poll_one_servo(uint32_t now_ms);
+  void poll_servos(uint32_t now_ms, int count);  // up to `count` assigned servos, round-robin
   bool pose_near(const float q[kNumJoints], const float pose[kNumPoseJoints], float tol, bool legs_only) const;
   float sit_fraction() const;
 

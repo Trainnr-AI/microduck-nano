@@ -45,5 +45,6 @@ tools connect.
   `joints.servos`: the supply voltage and the position-gain register value the servo model was fitted at. `duckd`
   does not yet check them against the firmware; it matters once an SCS0009 model exists (stage 3).
 - Joint velocity: trainnr's walk observes it; the firmware reports no speed for the robot's loop (the bench mode
-  does), so `duckd` differences positions. Read at 6.7 Hz per servo with fifteen fitted, that is coarse.
+  does), so `duckd` differences positions. Armed, each joint is read at 50 Hz (8 servos a tick), so each policy
+  tick sees a fresh angle; differencing two 20 ms-apart readings of a 0.3-degree encoder is still coarse.
 - A GPU for real training runs (trainnr can train on a rented cloud GPU).

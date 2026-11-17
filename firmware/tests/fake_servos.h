@@ -49,6 +49,7 @@ class FakeBus : public duck::Transport {
  public:
   FakeServo servo[kServoIds];
   std::vector<WriteLog> writes;
+  std::vector<uint8_t> reads;  // the ID of every read request, answered or not
   std::vector<uint8_t> rx;  // bytes waiting to be read by the host
   size_t tx_bytes = 0;
   bool echo = false;
@@ -137,6 +138,7 @@ class FakeBus : public duck::Transport {
         if (answers) reply(id, nullptr, 0);
         break;
       case duck::scs::kRead:
+        reads.push_back(id);
         if (answers) reply(id, servo[id].mem + p[0], p[1]);
         break;
       case duck::scs::kWrite:

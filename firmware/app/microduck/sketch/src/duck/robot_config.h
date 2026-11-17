@@ -25,6 +25,7 @@ struct ServoConfig {
   int16_t step_min, step_max;
   uint32_t baud;
   uint16_t goal_speed;      // steps/s written with every goal; meaning of 0 UNCONFIRMED
+  uint8_t reads_per_tick;   // servos read per control tick while armed (each at most once a tick)
 };
 
 // Joint names are not stored here: they live in config/robot.json, and the status display has its own short ones

@@ -86,8 +86,8 @@ measured). trainnr's `ingest_recording` reads it with its `mcap` adapter; checke
 recording and one from the bare board, and with an independent ROS 2 decoder (`mcap-ros2-support`).
 
 What it cannot give yet: joint velocity and torque (the firmware reports neither; a servo's "load" is a duty cycle),
-the time each servo was read (messages carry the time `duckd` received the state), and a fast reading of every
-joint (the firmware reads one servo per 10 ms tick, so with all fifteen fitted each is read at 6.7 Hz).
+and the time each servo was read (messages carry the time `duckd` received the state). Armed, the firmware reads
+every joint at 50 Hz (8 servos a 10 ms tick); disarmed, one servo every 100 ms, so a disarmed recording is slow.
 
 For one servo on the bench, `duckd bench --joint NAME --supervised [--excite chirp|steps] [--amplitude 10]
 [--record FILE.mcap]` does better: with a bench build of the firmware (`DUCK_BENCH_MOTION 1`) it arms that joint

@@ -776,8 +776,8 @@ static void test_faults_switch_torque_off() {
   trips([](Rig& r) { r.fake.servo[9].mem[scs::reg::kPresentTemperature] = 66; }, 20, Fault::kOverTemp);
   trips([](Rig& r) { r.fake.servo[2].mem[scs::reg::kPresentVoltage] = 40; }, 20, Fault::kUnderVoltage);
   trips([](Rig& r) { r.fake.status_error = scs::kErrOverload; }, 20, Fault::kServoStatus);
-  // A servo stops answering.
-  const Status mute = trips([](Rig& r) { r.fake.servo[11].mute = true; }, 15 * 6, Fault::kComm);
+  // A servo stops answering: comm_fail_count (5) reads in a row, one every 2 ticks at 8 reads a tick.
+  const Status mute = trips([](Rig& r) { r.fake.servo[11].mute = true; }, 12, Fault::kComm);
   CHECK(mute.fault_joint == 10);
   // Fall: trunk far from the planned pitch, or rolled over.
   {
@@ -968,6 +968,42 @@ static void test_status_display() {
   CHECK(px(0, 3) == kLedFull && px(0, 5) == kLedFull && px(2, 4) == kLedFull);
 }
 
+static void test_armed_reads_every_servo_each_policy_tick() {
+  // Armed, reads_per_tick servos are read each tick, round-robin: with the shipped 8, all fifteen within two ticks
+  // (each joint at 50 Hz), and none twice in a tick even when more reads are allowed than there are servos.
+  Rig r(calibrated_config());
+  CHECK(r.cfg.servo.reads_per_tick == 8);
+  r.arm_at(r.cfg.stand);
+  for (int pass = 0; pass < 3; ++pass) {
+    r.fake.reads.clear();
+    r.run(1);
+    CHECK(r.fake.reads.size() == 8);
+    r.run(1);
+    for (int j = 0; j < kNumJoints; ++j) {
+      int n = 0;
+      for (uint8_t id : r.fake.reads) n += id == r.cfg.joints[j].servo_id;
+      CHECK(n >= 1);
+    }
+  }
+  RobotConfig c = calibrated_config();
+  c.servo.reads_per_tick = 99;
+  Rig all(c);
+  all.arm_at(all.cfg.stand);
+  all.fake.reads.clear();
+  all.run(1);
+  CHECK(all.fake.reads.size() == kNumJoints);
+  bool seen[256] = {};
+  for (uint8_t id : all.fake.reads) {
+    CHECK(!seen[id]);
+    seen[id] = true;
+  }
+  // Disarmed it stays one read every 100 ms.
+  all.ctl.disarm();
+  all.fake.reads.clear();
+  all.run(20);
+  CHECK(all.fake.reads.size() == 2);
+}
+
 static void test_bench_servo_polled_every_turn() {
   // A bench with one servo assigned (the rest unassigned, as in the shipped config): disarmed, it is read on every
   // idle poll (10 Hz), not once per pass over all fifteen joints.
@@ -1128,6 +1164,7 @@ int main() {
   RUN(test_command_timeout_holds);
   RUN(test_gyro_in_status);
   RUN(test_status_display);
+  RUN(test_armed_reads_every_servo_each_policy_tick);
   RUN(test_bench_servo_polled_every_turn);
   RUN(test_bench_servo);
   printf("\n%d tests, %d checks, %d failed\n", g_tests, g_checks, g_failed);

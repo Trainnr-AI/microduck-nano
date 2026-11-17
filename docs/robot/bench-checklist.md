@@ -60,6 +60,10 @@ are powered.
 13. **Not before** the firmware has the design's new limits (handoff, "What to do next" 3): the right leg's own
    hip map, the both-legs rule, the knee x ankle interlock and the ankle-dependent hip cells. Today's firmware
    mirrors the left leg's map and has none of the others. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
+    With every servo fitted and armed, read `worst firmware tick` in `duck_status` (`duckd status`): armed, the firmware
+    reads `servo.reads_per_tick` servos (8) every 10 ms tick, and Linux's calls wait while it does. It should stay
+    well under 10 ms; compare `duckd time` armed and disarmed. If it does not, lower `reads_per_tick` (6 still reads
+    each joint at about 40 Hz), or look at the servos' return delay (register 7, unconfirmed) before anything else.
 14. Move one joint at a time through small targets; watch `duck_setpoints` against `duck_joints` and the sign of each
     joint. Check goal speed 0 behaves as "fast" and the rate limit feels sane; lower `max_speed_dps` if not.
 15. Drive each joint to both limits slowly and look for contact before the limit. Try the head roll / yaw interlock and

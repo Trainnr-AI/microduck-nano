@@ -66,6 +66,8 @@ def validate(r):
     names = [j["name"] for j in r["joints"]]
     if names != JOINT_ORDER:
         sys.exit(f"joints must be exactly, in order: {JOINT_ORDER}")
+    if not 1 <= r["servo"]["reads_per_tick"] <= len(JOINT_ORDER):
+        sys.exit(f"servo.reads_per_tick must be 1..{len(JOINT_ORDER)}")
     ids = [j["servo_id"] for j in r["joints"] if j["servo_id"] is not None]
     if len(ids) != len(set(ids)) or any(not (0 <= i <= 253) for i in ids):
         sys.exit("servo_id values must be unique and 0..253 (or null)")
@@ -116,7 +118,7 @@ def render(r):
     w("")
     w("static const RobotConfig kRobotConfig = {")
     w(f"  /* servo */ {{{f(s['steps_per_deg'])}, {int(s['step_min'])}, {int(s['step_max'])}, {int(s['baud'])}u, "
-      f"{int(s['goal_speed_steps_per_s'])}}},")
+      f"{int(s['goal_speed_steps_per_s'])}, {int(s['reads_per_tick'])}}},")
     w("  /* joints: servo id, zero step, direction, calibrated, min, max, max speed */ {")
     for j in r["joints"]:
         sid = "kServoIdUnassigned" if j["servo_id"] is None else str(int(j["servo_id"]))
