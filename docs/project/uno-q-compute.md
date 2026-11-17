@@ -31,7 +31,8 @@ All inputs are random arrays of the right shape, so these are speeds, not accura
 | 640 → 1024 → 512 → 256 → 14 (10 steps of history) | 3.2 ms (310 /s) | 1.0 ms |
 
 A policy stepped 50 times a second uses under 4 % of one core at the default size. The policy is not the constraint;
-the link to the microcontroller is (115200 baud, about 256-byte messages).
+the link to the microcontroller is: about 4 ms a tick at 460800 baud, the fastest speed that stays clean
+([runtime/README.md](../../runtime/README.md), "With a faster link").
 
 ## Vision: YOLO11n on the CPU (ONNX Runtime)
 

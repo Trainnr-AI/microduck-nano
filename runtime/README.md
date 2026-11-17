@@ -113,6 +113,17 @@ adb shell 'cd /home/arduino/duck && ./duckd run --robot robot.json --hz 50 --sec
 adb shell 'cd /home/arduino/duck && ./duckd policy-time --robot robot.json --policy policy_nano.onnx'
 ```
 
+For steadier timing (measured below: about 10 % off each tick's exchange and a lower worst case), run the loop on a
+core of its own at real-time priority with the CPU at full speed. Both need root:
+
+```sh
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+sudo chrt -f 50 taskset -c 3 ./duckd run --robot robot.json --hz 50 --seconds 10
+```
+
+Inside the loop a call waits one tick for its reply, no longer: a reply the link loses costs that tick (the loop
+holds), and one that comes late is dropped when it arrives instead of being taken for the next call's.
+
 ## What it measured (2026-11-15, bare board, default 115200 baud link)
 
 One call to the microcontroller and back costs a fixed 5.5 ms or so plus about 0.1 ms per byte of reply
@@ -157,9 +168,24 @@ At 460800 the loop ran 9,000 ticks (30 s each at 50 and 100 Hz, as one read and 
 missed deadlines and no router errors; a tick's exchange took about 5 ms. That leaves 15 ms of a 50 Hz tick for the
 policy, and makes 100 Hz possible.
 
-The higher speeds most likely fail because the microcontroller receives one byte per interrupt and falls behind;
-Luwu's XGO-Duck runtime reaches 2 Mbps on this board by switching on the UART's hardware buffer. Not tried here.
-Whether 460800 stays clean once the servo bus is busy at 1 Mbaud on the same microcontroller is also untested.
+Measured again on 2026-11-17 with [`scripts/uno-q-bench/link_speed.sh`](../scripts/uno-q-bench/link_speed.sh)
+(raw output in `scripts/uno-q-bench/results/link-speed-*.txt`): protocol 3 firmware, bare board, `duckd run --exchange
+step`, a tick's exchange as median / max, and calls that got no reply within 0.5 s:
+
+| Link | Matrix | Exchange, plain | Exchange, real-time settings | Lost replies |
+|---|---|---|---|---|
+| **460800** | on | 3.96 / 5.10 ms | **3.59 / 4.80 ms** | none in 6,000 ticks (and 1,500 more after) |
+| 1000000 | on | 2.77 / 5.65 ms | 2.33 / 3.42 ms | several, mostly just after the app started |
+| 1000000 | off | 2.83 / 3.59 ms | 2.52 / 2.92 ms | 1 to 5 a minute once settled |
+| 2000000 | on or off | | | most replies longer than about 15 values (`duck_state` 426 of 500, `duck_step` and `duck_health` all) |
+
+"Real-time settings": CPU governor `performance`, `duckd` at `SCHED_FIFO` 50 on core 3. The LED matrix's interrupt
+is not the cause of the losses (they are the same without it). They grow with the length of the reply while the
+requests stay short, which points at the microcontroller-to-Linux direction; the cause is not established. Luwu's
+XGO-Duck runtime reaches 2 Mbps on this board by switching on the UART's hardware buffer; not tried here.
+
+**Kept at 460800:** 1 Mbaud saves about 1.2 ms of a 20 ms tick, not worth a lost reply every minute or so. Whether
+460800 stays clean once the servo bus is busy at 1 Mbaud on the same microcontroller is untested.
 
 ### Policy inference
 
@@ -176,4 +202,5 @@ all 500 ticks for want of joint angles. The policy path through the loop is cove
 1. A command source (gamepad or network) instead of the zero command.
 2. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
 3. Check the gravity and gyro sign conventions against the IMU on the bench and against the training simulation.
-4. The hardware receive buffer on the microcontroller's UART, if more than 460800 baud is ever needed.
+4. The UART's hardware buffer on the microcontroller, and finding which side loses bytes, if more than 460800 baud
+   is ever needed.

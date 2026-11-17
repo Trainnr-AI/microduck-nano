@@ -1,0 +1,124 @@
+link-speed measurement 2026-11-17T11:20:16Z; started at 460800 baud, governor(s) schedutil 
+
+=== 460800 baud
+temperatures (m degC): 37600 36400 35800 39800 39500 35500 37000 35800 37900 36100 
+$ /home/arduino/duck/duckd status
+firmware protocol 3 (this runtime speaks 3)
+  motion build: false   permanent-memory writes: false
+  joint table ready: false   IMU present: false
+  servo port is Serial1: true
+mode DISARMED   posture UNKNOWN   fault none
+  IMU ok: false   pitch 0.0 deg   roll 0.0 deg
+  flags 0x400   worst firmware tick 51 us
+servos answering: 0/15
+$ /home/arduino/duck/duckd time --count 500
+duck_info    [ 7 values]  median 2.32 ms   95th 2.99 ms   max 3.40 ms   (500 calls)
+duck_status  [10 values]  median 2.90 ms   95th 3.02 ms   max 9.33 ms   (500 calls)
+duck_joints  [15 values]  median 3.19 ms   95th 3.72 ms   max 5.50 ms   (500 calls)
+duck_state   [28 values]  median 4.09 ms   95th 4.25 ms   max 5.05 ms   (500 calls)
+duck_step    [28 values]  median 5.71 ms   95th 6.31 ms   max 7.42 ms   (500 calls)
+duck_health  [45 values]  median 4.10 ms   95th 4.22 ms   max 5.49 ms   (500 calls)
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 50 Hz for 20 s
+status light (LED1): yes
+ticks 1000   errors 0   missed deadlines 0
+exchange per tick (Step): median 3.96 ms   95th 4.58 ms   max 5.10 ms   (period 20.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 4000
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 100 Hz for 20 s
+status light (LED1): yes
+ticks 2000   errors 0   missed deadlines 0
+exchange per tick (Step): median 3.92 ms   95th 4.75 ms   max 5.46 ms   (period 10.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 8000
+--- real-time: governor performance, SCHED_FIFO 50, core 3
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 50 Hz for 20 s
+status light (LED1): yes
+ticks 1000   errors 0   missed deadlines 0
+exchange per tick (Step): median 3.59 ms   95th 4.22 ms   max 4.80 ms   (period 20.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 4000
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 100 Hz for 20 s
+status light (LED1): yes
+ticks 2000   errors 0   missed deadlines 0
+exchange per tick (Step): median 3.60 ms   95th 4.38 ms   max 5.06 ms   (period 10.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 8000
+temperatures (m degC): 36400 35500 35100 37900 37300 34800 36400 34800 36700 35800 
+
+=== 1000000 baud
+temperatures (m degC): 41100 39800 38900 44200 44200 38900 40100 38900 41100 39200 
+$ /home/arduino/duck/duckd status
+firmware protocol 3 (this runtime speaks 3)
+  motion build: false   permanent-memory writes: false
+  joint table ready: false   IMU present: false
+  servo port is Serial1: true
+mode DISARMED   posture UNKNOWN   fault none
+  IMU ok: false   pitch 0.0 deg   roll 0.0 deg
+  flags 0x400   worst firmware tick 44 us
+servos answering: 0/15
+$ /home/arduino/duck/duckd time --count 500
+duckd: router socket: Resource temporarily unavailable (os error 11)
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+duckd: router socket: Resource temporarily unavailable (os error 11)
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 100 Hz for 20 s
+status light (LED1): yes
+ticks 2000   errors 0   missed deadlines 0
+exchange per tick (Step): median 2.77 ms   95th 3.32 ms   max 5.65 ms   (period 10.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 8000
+--- real-time: governor performance, SCHED_FIFO 50, core 3
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 50 Hz for 20 s
+status light (LED1): yes
+ticks 1000   errors 0   missed deadlines 0
+exchange per tick (Step): median 2.33 ms   95th 2.96 ms   max 3.42 ms   (period 20.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 4000
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 100 Hz for 20 s
+status light (LED1): yes
+ticks 2000   errors 0   missed deadlines 0
+exchange per tick (Step): median 2.42 ms   95th 2.94 ms   max 3.77 ms   (period 10.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 8000
+temperatures (m degC): 38600 37600 37300 39800 39500 37000 38600 37000 38600 37600 
+
+=== 2000000 baud
+temperatures (m degC): 42300 41700 40100 45400 45400 40100 41400 40100 42600 41100 
+$ /home/arduino/duck/duckd status
+firmware protocol 3 (this runtime speaks 3)
+  motion build: false   permanent-memory writes: false
+  joint table ready: false   IMU present: false
+  servo port is Serial1: true
+mode DISARMED   posture UNKNOWN   fault none
+  IMU ok: false   pitch 0.0 deg   roll 0.0 deg
+  flags 0x400   worst firmware tick 45 us
+servos answering: 0/15
+$ /home/arduino/duck/duckd time --count 500
+duckd: router socket: Resource temporarily unavailable (os error 11)
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 50 Hz for 20 s
+status light (LED1): yes
+ticks 186   errors 55   missed deadlines 34
+exchange per tick (Step): median 2.43 ms   95th 523.57 ms   max 531.93 ms   (period 20.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 524
+last error: router socket: Resource temporarily unavailable (os error 11)
+$ /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 100 Hz for 20 s
+status light (LED1): yes
+ticks 188   errors 62   missed deadlines 37
+exchange per tick (Step): median 2.43 ms   95th 523.86 ms   max 527.91 ms   (period 10.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 504
+last error: router socket: Resource temporarily unavailable (os error 11)
+--- real-time: governor performance, SCHED_FIFO 50, core 3
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 50 --seconds 20
+robot: 15 joints in 4 chains, 0 with a servo ID; loop 50 Hz for 20 s
+status light (LED1): yes
+ticks 41   errors 40   missed deadlines 39
+exchange per tick (Step): median 512.00 ms   95th 512.02 ms   max 524.00 ms   (period 20.00 ms)
+guard verdicts: move 0   hold 0   chain unmeasured 4
+last error: router socket: Resource temporarily unavailable (os error 11)
+$ chrt -f 50 taskset -c 3 /home/arduino/duck/duckd run --robot /home/arduino/duck/robot.json --exchange step --hz 100 --seconds 20
+duckd: router socket: Resource temporarily unavailable (os error 11)
+temperatures (m degC): 39200 38600 37900 40400 40400 37900 39200 37900 39500 38900 
+
+results: /home/arduino/duck/link-speed-20261117-112016.txt
+--- restoring link speed 460800 and governor(s) schedutil 

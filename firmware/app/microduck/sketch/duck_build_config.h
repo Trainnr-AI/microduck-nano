@@ -40,7 +40,8 @@
 
 // Speed of the link between the microcontroller and the Linux side (the Bridge), in baud. The board's router
 // service uses 115200 unless it has been changed with tools/set-link-speed.sh; the two must match or the
-// firmware's functions never appear on the Linux side.
+// firmware's functions never appear on the Linux side. 460800 is the fastest measured clean (1000000 loses a
+// reply every minute or so, 2000000 most long ones): runtime/README.md, "With a faster link".
 #ifndef DUCK_BRIDGE_BAUD
 #define DUCK_BRIDGE_BAUD 115200
 #endif
