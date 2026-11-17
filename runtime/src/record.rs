@@ -6,7 +6,7 @@
 //!
 //! | Topic | Message | What |
 //! |---|---|---|
-//! | `/joint_states` | `sensor_msgs/msg/JointState` | measured joint angles, radians, all fifteen joints; NaN where the servo did not answer |
+//! | `/joint_states` | `sensor_msgs/msg/JointState` | measured joint angles (radians) and each servo's own speed report (rad/s), all fifteen joints; NaN where the servo did not answer, no velocities from protocol 1 reads |
 //! | `/joint_commands` | `sensor_msgs/msg/JointState` | the targets sent to the firmware that tick (only with `--exchange step`); from `duckd bench`, the goal the firmware wrote after its clamp and speed limit |
 //! | `/joint_targets` | `sensor_msgs/msg/JointState` | `duckd bench` only: the target asked for, before the firmware's clamp and speed limit |
 //! | `/imu` | `sensor_msgs/msg/Imu` | trunk orientation from the firmware's pitch and roll (yaw unknown), body angular velocity |
@@ -213,8 +213,9 @@ impl Recorder {
     /// Record one tick: what was measured and, if targets went out with it, what was sent (radians, firmware order).
     pub fn tick(&mut self, sensed: &Sensed, sent: Option<&[f64]>) -> Result<(), RecordError> {
         let t_ns = now_ns();
-        let positions: Vec<f64> = sensed.joints.iter().map(|j| j.unwrap_or(f64::NAN)).collect();
-        self.write(self.joint_states, t_ns, &joint_state(t_ns, &JOINT_NAMES, &positions, &[]))?;
+        let nan = |values: &[Option<f64>]| values.iter().map(|v| v.unwrap_or(f64::NAN)).collect::<Vec<f64>>();
+        let (positions, velocities) = (nan(&sensed.joints), nan(&sensed.joint_speeds));
+        self.write(self.joint_states, t_ns, &joint_state(t_ns, &JOINT_NAMES, &positions, &velocities))?;
         if let Some(sent) = sent {
             self.write(self.joint_commands, t_ns, &joint_state(t_ns, &JOINT_NAMES, sent, &[]))?;
         }

@@ -15,7 +15,7 @@ trainnr project: `microduck-nano` (under trainnr's data folder, not in this repo
 | 5. Train | `train_walk` | | needs 3 and 4, and a GPU: on this Mac's CPU a smoke run makes 785 environment steps a second, a full run (8,000 iterations x 4,096 environments x 24 steps) would take about 12 days |
 | 6. Evaluate | `evaluate_walk` | | works (exact intervals) |
 | 7. Export | `export_deployment` | | works: `policy.onnx` + `deploy.json` (`trainnr-deploy/1`) |
-| 8. Sim-to-sim gate | `gate_deployment` (runtime `mujoco`) | | works; reads "passed" for a policy that agrees with its evaluation even when it never walked ([trainnr#108](https://github.com/Trainnr-AI/trainnr/issues/108)) |
+| 8. Sim-to-sim gate | `gate_deployment` (runtime `mujoco`) | | works; passes only a policy whose evaluation demonstrated a success ([trainnr#108](https://github.com/Trainnr-AI/trainnr/issues/108), fixed upstream 2026-11-15; needs a trainnr plugin from after that date) |
 | 9. Preflight | `preflight_deployment` | | works: refused the pipeline-check policy for targets 1.5 rad past a joint's range, as it should |
 | 10. On the robot | | `duckd run --policy DEPLOYMENT [--command FORWARD,SIDEWAYS,TURN]` | `duckd` reads the export as trainnr wrote it; on the board 0.40 ms per inference. The command is refused outside the ranges the policy was trained on. The firmware's own limits, interlocks and faults stay underneath |
 | 11. Drift | `check_drift` | `duckd run --record` | ready once 2 has real data |
@@ -41,8 +41,10 @@ tools connect.
 ## Not settled
 
 - The sign conventions of the IMU terms against a real BNO086 (bench checklist step 3).
-- How trainnr's `deploy.json` describes a BAM-servo robot's gains ([trainnr#107](https://github.com/Trainnr-AI/trainnr/issues/107))
-  and its observation conventions ([trainnr#106](https://github.com/Trainnr-AI/trainnr/issues/106)).
-- Joint velocity: trainnr's walk observes it; the firmware reports no speed for the robot's loop (the bench mode
-  does), so `duckd` differences positions. Read at 6.7 Hz per servo with fifteen fitted, that is coarse.
+- The servo settings a policy assumes. Since trainnr#107 (fixed 2026-11-15) a deployment for a servo robot carries
+  `joints.servos`: the supply voltage and the position-gain register value the servo model was fitted at. `duckd`
+  does not yet check them against the firmware; it matters once an SCS0009 model exists (stage 3).
+- Joint velocity: trainnr's walk observes it. Since protocol 4 the firmware passes each servo's own speed report
+  (read with its angle, every joint at 50 Hz armed) and `duckd` feeds that to the policy. Its unit is unconfirmed
+  until bench checklist 8b compares it with the recorded positions.
 - A GPU for real training runs (trainnr can train on a rented cloud GPU).

@@ -59,9 +59,16 @@ impl Bridge<UnixStream> {
     /// Connect to the router socket with a per-call timeout.
     pub fn connect(path: impl AsRef<Path>, timeout: Duration) -> Result<Self, BridgeError> {
         let stream = UnixStream::connect(path)?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        Ok(Bridge::new(stream))
+        let mut bridge = Bridge::new(stream);
+        bridge.set_timeout(timeout)?;
+        Ok(bridge)
+    }
+
+    /// How long a call may wait to send its request and for its reply. A reply that comes later is dropped when it
+    /// arrives, so a loop can wait one tick and no longer.
+    pub fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        self.stream.set_write_timeout(Some(timeout))
     }
 }
 
@@ -80,6 +87,22 @@ impl<S: Read + Write> Bridge<S> {
         self.stream.write_all(&bytes)?;
         self.stream.flush()?;
 
+        loop {
+            let (got, error, result) = self.read_reply()?;
+            if got == u64::from(id) {
+                return if error.is_nil() { Ok(result) } else { Err(BridgeError::Remote(error.to_string())) };
+            }
+            // The late answer to an earlier call that already timed out: stale, so dropped. Taking it as this call's
+            // answer would leave every later call one reply behind.
+            let behind = u32::try_from(got).map(|got| id.wrapping_sub(got));
+            if !matches!(behind, Ok(1..=0x7fff_ffff)) {
+                return Err(BridgeError::WrongId { sent: id, got });
+            }
+        }
+    }
+
+    /// One reply off the stream: its id, error and result.
+    fn read_reply(&mut self) -> Result<(u64, Value, Value), BridgeError> {
         let reply = rmpv::decode::read_value(&mut self.stream).map_err(|e| match e {
             rmpv::decode::Error::InvalidMarkerRead(io) | rmpv::decode::Error::InvalidDataRead(io) => BridgeError::Io(io),
             other => BridgeError::Malformed(other.to_string()),
@@ -93,13 +116,7 @@ impl<S: Read + Write> Bridge<S> {
             return Err(BridgeError::Malformed("reply type is not 1".into()));
         }
         let got = got_id.as_u64().ok_or_else(|| BridgeError::Malformed("reply id is not a number".into()))?;
-        if got != u64::from(id) {
-            return Err(BridgeError::WrongId { sent: id, got });
-        }
-        if !error.is_nil() {
-            return Err(BridgeError::Remote(error.to_string()));
-        }
-        Ok(result)
+        Ok((got, error, result))
     }
 
     /// Call a method that returns a list of integers.

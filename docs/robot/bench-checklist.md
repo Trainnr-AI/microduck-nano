@@ -44,7 +44,9 @@ are powered.
    - go back to the default build (both switches 0) and confirm `duck_info` reports motion 0, bench 0.
    The recordings carry the targets asked for, the goals the firmware wrote after its clamp and speed limit (what
    the servo was told: fit against these), and every read of the servo (position, its own speed report), stamped
-   when it was read. trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
+   when it was read. Check the speed report's unit with them: the servo's speed against the change of its position
+   between reads (`duck_state` and the policy take register 58 as steps/s; if it is not, fix `speed_to_dps` in
+   `robot_config.cpp` before any policy runs). trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 
@@ -57,8 +59,13 @@ are powered.
 
 **D. First motion (motion build: `DUCK_ENABLE_MOTION 1`), robot held in a stand or by a second person, feet off the floor**
 
-13. **Not before** the firmware has the design's right-leg hip map and its both-legs rule (handoff, "What to do
-   next" 3): today's firmware mirrors the left leg's map. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
+13. **Not before** the firmware has the design's new limits (handoff, "What to do next" 3): the right leg's own
+   hip map, the both-legs rule, the knee x ankle interlock and the ankle-dependent hip cells. Today's firmware
+   mirrors the left leg's map and has none of the others. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
+    With every servo fitted and armed, read `worst firmware tick` in `duck_status` (`duckd status`): armed, the firmware
+    reads `servo.reads_per_tick` servos (8) every 10 ms tick, and Linux's calls wait while it does. It should stay
+    well under 10 ms; compare `duckd time` armed and disarmed. If it does not, lower `reads_per_tick` (6 still reads
+    each joint at about 40 Hz), or look at the servos' return delay (register 7, unconfirmed) before anything else.
 14. Move one joint at a time through small targets; watch `duck_setpoints` against `duck_joints` and the sign of each
     joint. Check goal speed 0 behaves as "fast" and the rate limit feels sane; lower `max_speed_dps` if not.
 15. Drive each joint to both limits slowly and look for contact before the limit. Try the head roll / yaw interlock and

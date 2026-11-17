@@ -25,6 +25,7 @@ struct ServoConfig {
   int16_t step_min, step_max;
   uint32_t baud;
   uint16_t goal_speed;      // steps/s written with every goal; meaning of 0 UNCONFIRMED
+  uint8_t reads_per_tick;   // servos read per control tick while armed (each at most once a tick)
 };
 
 // Joint names are not stored here: they live in config/robot.json, and the status display has its own short ones
@@ -106,5 +107,8 @@ bool config_ready_for_motion(const RobotConfig& cfg);
 // the servo's step range.
 int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg);
 float step_to_deg(const RobotConfig& cfg, int joint, int16_t step);
+// The servo's own speed report (register 58, assumed steps/s: UNCONFIRMED, bench checklist 8b) as the joint's
+// speed in degrees per second, in the joint's direction.
+float speed_to_dps(const RobotConfig& cfg, int joint, int16_t speed);
 
 }  // namespace duck

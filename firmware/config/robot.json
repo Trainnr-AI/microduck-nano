@@ -6,12 +6,13 @@
   "Angles are degrees from each joint's zero (the model's rest pose), signs as in the MJCF. Joint order is the MJCF actuator order, beak last."
  ],
  "servo": {
-  "_note": "SCS0009: 1024 steps over 300 deg. steps_per_deg and the meaning of goal speed 0 are UNCONFIRMED on a real servo.",
+  "_note": "SCS0009: 1024 steps over 300 deg. steps_per_deg and the meaning of goal speed 0 are UNCONFIRMED on a real servo. reads_per_tick: servos read per 10 ms control tick while armed, round-robin; 8 reads all fifteen every 2 ticks, each joint at 50 Hz, the policy's rate. Each read costs bus time and delays replies to Linux by as much (UNCONFIRMED: measure the worst firmware tick in duck_status, bench checklist). Disarmed, one servo is read every 100 ms.",
   "steps_per_deg": 3.41,
   "step_min": 0,
   "step_max": 1023,
   "baud": 1000000,
-  "goal_speed_steps_per_s": 0
+  "goal_speed_steps_per_s": 0,
+  "reads_per_tick": 8
  },
  "joints": [
   {

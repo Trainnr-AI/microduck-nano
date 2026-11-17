@@ -57,14 +57,21 @@ trained on is refused.
 
 `duckd` refuses a deployment of another schema, an observation it cannot measure or one with a history, joints that
 are not the robot's or not in its order, a default pose outside the joint limits, or a network whose sizes differ
-from the manifest's. Where trainnr's format leaves a convention unstated (trainnr#106), `policy.rs` says which
-reading it takes. Checked on the board on 2026-11-15 with a real export (a 50-iteration pipeline check on Pollen's
+from the manifest's. It reads `deploy.json` as trainnr specifies it (trainnr's docs/87, written for trainnr#106):
+observations scaled then clipped, `target = default_pos + scale * action` with `action.offset` equal to the default
+pose, the rate from `physics_timestep_s * decimation`, and any key or observation source it does not know refused. Checked on the board on 2026-11-15 with a real export (a 50-iteration pipeline check on Pollen's
 microduck, whose joints match ours): loaded and checked, 0.40 ms per inference. On a tick where something the policy needs was not measured
 (a silent servo, no IMU), the policy does not run and the loop holds; a missing value is never replaced by zero.
 
-`angular_velocity` comes from the gyro in the firmware's state message (protocol 3), in the body frame (x forward,
+`angular_velocity` comes from the gyro in the firmware's state message (protocol 4), in the body frame (x forward,
 y left, z up) after the IMU's mounting matrix in `robot.json`. It is "not measured" until that matrix is calibrated,
 and with `--exchange two-reads`, which has no gyro. `duckd run` refuses `state` and `step` against an older firmware.
+
+`joint_vel_rel` comes from each servo's own speed report, read with its angle and carried in the same state message
+(protocol 4); it is also recorded as `/joint_states` velocity. Where a servo gave none (`two-reads`), the speed is
+the difference from the previous tick. The speed register's unit (steps/s) is unconfirmed on a real SCS0009: bench
+checklist 8b checks it before a policy relies on it. The 15 extra words cost about 1.2 ms an exchange at 460800
+(`duck_step` 5.7 to 6.9 ms; a 50 Hz tick's exchange 4.0 to 5.2 ms, bare board, 2026-11-17).
 
 The gap before a real policy can run: the sign conventions of `projected_gravity` and `angular_velocity` are unchecked
 against both a real IMU and the training simulation.
@@ -85,8 +92,8 @@ measured). trainnr's `ingest_recording` reads it with its `mcap` adapter; checke
 recording and one from the bare board, and with an independent ROS 2 decoder (`mcap-ros2-support`).
 
 What it cannot give yet: joint velocity and torque (the firmware reports neither; a servo's "load" is a duty cycle),
-the time each servo was read (messages carry the time `duckd` received the state), and a fast reading of every
-joint (the firmware reads one servo per 10 ms tick, so with all fifteen fitted each is read at 6.7 Hz).
+and the time each servo was read (messages carry the time `duckd` received the state). Armed, the firmware reads
+every joint at 50 Hz (8 servos a 10 ms tick); disarmed, one servo every 100 ms, so a disarmed recording is slow.
 
 For one servo on the bench, `duckd bench --joint NAME --supervised [--excite chirp|steps] [--amplitude 10]
 [--record FILE.mcap]` does better: with a bench build of the firmware (`DUCK_BENCH_MOTION 1`) it arms that joint
@@ -111,6 +118,17 @@ adb shell '/home/arduino/duck/duckd status'
 adb shell 'cd /home/arduino/duck && ./duckd run --robot robot.json --hz 50 --seconds 10'
 adb shell 'cd /home/arduino/duck && ./duckd policy-time --robot robot.json --policy policy_nano.onnx'
 ```
+
+For steadier timing (measured below: about 10 % off each tick's exchange and a lower worst case), run the loop on a
+core of its own at real-time priority with the CPU at full speed. Both need root:
+
+```sh
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+sudo chrt -f 50 taskset -c 3 ./duckd run --robot robot.json --hz 50 --seconds 10
+```
+
+Inside the loop a call waits one tick for its reply, no longer: a reply the link loses costs that tick (the loop
+holds), and one that comes late is dropped when it arrives instead of being taken for the next call's.
 
 ## What it measured (2026-11-15, bare board, default 115200 baud link)
 
@@ -156,9 +174,24 @@ At 460800 the loop ran 9,000 ticks (30 s each at 50 and 100 Hz, as one read and 
 missed deadlines and no router errors; a tick's exchange took about 5 ms. That leaves 15 ms of a 50 Hz tick for the
 policy, and makes 100 Hz possible.
 
-The higher speeds most likely fail because the microcontroller receives one byte per interrupt and falls behind;
-Luwu's XGO-Duck runtime reaches 2 Mbps on this board by switching on the UART's hardware buffer. Not tried here.
-Whether 460800 stays clean once the servo bus is busy at 1 Mbaud on the same microcontroller is also untested.
+Measured again on 2026-11-17 with [`scripts/uno-q-bench/link_speed.sh`](../scripts/uno-q-bench/link_speed.sh)
+(raw output in `scripts/uno-q-bench/results/link-speed-*.txt`): protocol 3 firmware, bare board, `duckd run --exchange
+step`, a tick's exchange as median / max, and calls that got no reply within 0.5 s:
+
+| Link | Matrix | Exchange, plain | Exchange, real-time settings | Lost replies |
+|---|---|---|---|---|
+| **460800** | on | 3.96 / 5.10 ms | **3.59 / 4.80 ms** | none in 6,000 ticks (and 1,500 more after) |
+| 1000000 | on | 2.77 / 5.65 ms | 2.33 / 3.42 ms | several, mostly just after the app started |
+| 1000000 | off | 2.83 / 3.59 ms | 2.52 / 2.92 ms | 1 to 5 a minute once settled |
+| 2000000 | on or off | | | most replies longer than about 15 values (`duck_state` 426 of 500, `duck_step` and `duck_health` all) |
+
+"Real-time settings": CPU governor `performance`, `duckd` at `SCHED_FIFO` 50 on core 3. The LED matrix's interrupt
+is not the cause of the losses (they are the same without it). They grow with the length of the reply while the
+requests stay short, which points at the microcontroller-to-Linux direction; the cause is not established. Luwu's
+XGO-Duck runtime reaches 2 Mbps on this board by switching on the UART's hardware buffer; not tried here.
+
+**Kept at 460800:** 1 Mbaud saves about 1.2 ms of a 20 ms tick, not worth a lost reply every minute or so. Whether
+460800 stays clean once the servo bus is busy at 1 Mbaud on the same microcontroller is untested.
 
 ### Policy inference
 
@@ -175,4 +208,5 @@ all 500 ticks for want of joint angles. The policy path through the loop is cove
 1. A command source (gamepad or network) instead of the zero command.
 2. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
 3. Check the gravity and gyro sign conventions against the IMU on the bench and against the training simulation.
-4. The hardware receive buffer on the microcontroller's UART, if more than 460800 baud is ever needed.
+4. The UART's hardware buffer on the microcontroller, and finding which side loses bytes, if more than 460800 baud
+   is ever needed.

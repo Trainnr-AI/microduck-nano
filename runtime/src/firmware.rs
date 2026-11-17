@@ -12,8 +12,8 @@ use rmpv::Value;
 use crate::bridge::{Bridge, BridgeError};
 use crate::robot::JOINT_NAMES;
 
-/// The firmware protocol this runtime speaks: 3 added the gyro to the state message.
-pub const PROTOCOL: i64 = 3;
+/// The firmware protocol this runtime speaks: 3 added the gyro to the state message, 4 each joint's speed.
+pub const PROTOCOL: i64 = 4;
 /// The arm key the firmware expects (`duck::kArmKey`).
 pub const ARM_KEY: u32 = 0xD0C5_A4B3;
 
@@ -43,8 +43,9 @@ fn field(v: &[i64], i: usize) -> Result<i64, BridgeError> {
     v.get(i).copied().ok_or(BridgeError::Shape("reply is shorter than the firmware's protocol says"))
 }
 
-/// An angle on the wire (tenths of a degree, [`MISSING`] for none) in radians.
-fn angle(tenths: i64) -> Option<f64> {
+/// An angle or a speed on the wire (tenths of a degree, or of a degree per second; [`MISSING`] for none) in radians
+/// (per second).
+fn radians(tenths: i64) -> Option<f64> {
     (tenths != MISSING).then(|| (tenths as f64 / 10.0).to_radians())
 }
 
@@ -127,9 +128,12 @@ pub struct Sensed {
     pub pitch_roll: Option<(f64, f64)>,
     /// Body angular velocity in rad/s.
     pub angular_velocity: Option<[f64; 3]>,
+    /// Joint speeds in rad/s as each servo reported them in the same read as the angle; empty when the exchange
+    /// carries none (firmware protocol 1 reads).
+    pub joint_speeds: Vec<Option<f64>>,
 }
 
-/// Everything a control tick needs, from one reply (firmware protocol 3: `duck_state` and `duck_step`).
+/// Everything a control tick needs, from one reply (firmware protocol 4: `duck_state` and `duck_step`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     /// What the firmware did with the command this reply answers; "ok" for a plain read.
@@ -140,28 +144,33 @@ pub struct State {
     /// Body angular velocity in rad/s about x (forward), y (left), z (up); `None` when the gyro is not measured
     /// (no IMU, a stale report, or the IMU's mounting not calibrated in `robot.json`).
     pub angular_velocity: Option<[f64; 3]>,
+    /// Joint speeds in rad/s as each servo reported them in the same read as the angle (the register's unit is
+    /// unconfirmed on a real SCS0009: bench checklist 8b); `None` where the servo did not answer.
+    pub joint_speeds: Vec<Option<f64>>,
 }
 
 impl State {
     pub fn sensed(self) -> Sensed {
-        Sensed { pitch_roll: self.status.pitch_roll(), joints: self.joints, angular_velocity: self.angular_velocity }
+        let State { status, joints, angular_velocity, joint_speeds, .. } = self;
+        Sensed { pitch_roll: status.pitch_roll(), joints, angular_velocity, joint_speeds }
     }
 }
 
 fn parse_state(v: &[i64]) -> Result<State, BridgeError> {
     let joints = JOINT_NAMES.len();
-    if v.len() == 10 + joints {
-        return Err(BridgeError::Shape("state reply has no gyro: the firmware speaks protocol 2, this runtime needs 3"));
-    }
-    if v.len() != 10 + joints + 3 {
-        return Err(BridgeError::Shape("state reply is not 10 words, one per joint, then 3 gyro words"));
+    if v.len() != 10 + joints + 3 + joints {
+        return Err(BridgeError::Shape(
+            "state reply is not 10 words, one angle per joint, 3 gyro words and one speed per joint: the firmware \
+             speaks an older protocol (see duckd status); this runtime needs 4",
+        ));
     }
     let gyro = [field(v, 10 + joints)?, field(v, 11 + joints)?, field(v, 12 + joints)?];
     Ok(State {
         result: name(&RESULTS, field(v, 0)?),
         status: Status::from_words(v, [1, 2, 3, 5, 6, 7, 8, 9])?,
-        joints: v.iter().skip(10).take(joints).map(|&w| angle(w)).collect(),
+        joints: v.iter().skip(10).take(joints).map(|&w| radians(w)).collect(),
         angular_velocity: (!gyro.contains(&MISSING)).then(|| gyro.map(|w| (w as f64 / 10.0).to_radians())),
+        joint_speeds: v.iter().skip(13 + joints).map(|&w| radians(w)).collect(),
     })
 }
 
@@ -188,7 +197,7 @@ pub fn joints<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<Vec<Option<f64>
     if v.len() != JOINT_NAMES.len() {
         return Err(BridgeError::Shape("duck_joints did not return one value per joint"));
     }
-    Ok(v.into_iter().map(angle).collect())
+    Ok(v.into_iter().map(radians).collect())
 }
 
 /// Put `text` on the board's LED matrix (firmware protocol 3). Up to 32 characters; letters, digits and a few

@@ -45,19 +45,76 @@ fn fake_router(answer: fn(&str) -> Option<Value>) -> Bridge<UnixStream> {
     Bridge::new(client)
 }
 
+#[test]
+fn a_late_reply_to_an_earlier_call_is_dropped_not_taken_as_this_ones() {
+    // Before each answer the router sends the answer to the previous request, as a reply that missed its timeout does.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        while let Ok(Value::Array(req)) = rmpv::decode::read_value(&mut server) {
+            let id = req.get(1).and_then(Value::as_u64).unwrap_or(0);
+            for (reply_to, answer) in [(id - 1, "stale"), (id, "fresh")] {
+                let reply = Value::Array(vec![Value::from(1), Value::from(reply_to), Value::Nil, Value::from(answer)]);
+                rmpv::encode::write_value(&mut server, &reply).expect("write");
+            }
+        }
+    });
+    client.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+    let mut bridge = Bridge::new(client);
+    for _ in 0..3 {
+        assert_eq!(bridge.call("duck_info", vec![]).expect("a reply").as_str(), Some("fresh"));
+    }
+
+    // A reply to a request not yet sent is still an error.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        let _ = rmpv::decode::read_value(&mut server);
+        rmpv::encode::write_value(&mut server, &Value::Array(vec![Value::from(1), Value::from(9), Value::Nil, Value::Nil])).expect("write");
+    });
+    client.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+    assert!(matches!(Bridge::new(client).call("duck_info", vec![]), Err(BridgeError::WrongId { sent: 1, got: 9 })));
+}
+
+#[test]
+fn a_lost_reply_costs_the_loop_one_tick() {
+    // The router never answers the third request, as when the link drops a reply's bytes.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        let mut n = 0;
+        while let Ok(Value::Array(req)) = rmpv::decode::read_value(&mut server) {
+            n += 1;
+            if n == 3 {
+                continue;
+            }
+            let method = req.get(2).and_then(Value::as_str).unwrap_or("").to_string();
+            let reply = Value::Array(vec![Value::from(1), req[1].clone(), Value::Nil, bare_board(&method).unwrap_or(Value::Nil)]);
+            rmpv::encode::write_value(&mut server, &reply).expect("write");
+        }
+    });
+    let mut bridge = Bridge::new(client);
+    let period = Duration::from_millis(10);
+    bridge.set_timeout(period).expect("timeout");
+    let stats = control::run(&mut bridge, &robot(), period, Duration::from_millis(300), Exchange::Step, None, &mut Sinks::none());
+    assert_eq!(stats.errors, 1, "{:?}", stats.last_error);
+    assert!(stats.ticks >= 25, "the loop kept its rate: {} ticks in 300 ms", stats.ticks);
+    assert!(stats.missed_deadlines <= 1);
+}
+
 fn ints(v: &[i64]) -> Value {
     Value::Array(v.iter().map(|&x| Value::from(x)).collect())
 }
 
-/// A protocol 3 state reply: result, mode 0, IMU ok or not, level, every joint at `joint` tenths of a degree, the gyro.
+/// A protocol 4 state reply: result, mode 0, IMU ok or not, level, every joint at `joint` tenths of a degree, the gyro,
+/// then every joint's speed: 2.0 deg/s where the joint answered.
 fn state(result: i64, imu_ok: i64, joint: i64, gyro: [i64; 3]) -> Option<Value> {
-    Some(ints(&[&[result, 0, 0, 0, -1, if imu_ok == 1 { 0 } else { 1024 }, imu_ok, 0, 0, 2][..], &[joint; 15][..], &gyro[..]].concat()))
+    let speed = if joint == -32768 { -32768 } else { 20 };
+    let head = [result, 0, 0, 0, -1, if imu_ok == 1 { 0 } else { 1024 }, imu_ok, 0, 0, 2];
+    Some(ints(&[&head[..], &[joint; 15][..], &gyro[..], &[speed; 15][..]].concat()))
 }
 
 /// The firmware as it answers on a bare board: bench-safe build, no servos, no IMU.
 fn bare_board(method: &str) -> Option<Value> {
     match method {
-        "duck_info" => Some(ints(&[3, 0, 0, 0, 0, 1])),
+        "duck_info" => Some(ints(&[4, 0, 0, 0, 0, 1])),
         "duck_status" => Some(ints(&[0, 0, 0, -1, 1024, 0, 0, 0, 0, 2])),
         "duck_joints" => Some(ints(&[-32768; 15])),
         "duck_say" => Some(Value::from(5)),
@@ -87,28 +144,32 @@ fn standing_robot_without_gyro(method: &str) -> Option<Value> {
     }
 }
 
-/// The firmware before the gyro: a 25-word state message.
-fn protocol_2_firmware(method: &str) -> Option<Value> {
+/// The firmware before joint speeds: a 28-word state message (protocol 3).
+fn protocol_3_firmware(method: &str) -> Option<Value> {
     match method {
-        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..]].concat())),
+        "duck_state" => Some(ints(&[&[0, 0, 0, 0, -1, 0, 1, 0, 0, 2][..], &[5; 15][..], &[0; 3][..]].concat())),
         other => standing_robot(other),
     }
 }
 
 #[test]
-fn the_gyro_arrives_in_radians_per_second_or_not_at_all() {
+fn the_gyro_and_joint_speeds_arrive_in_radians_per_second_or_not_at_all() {
     let state = firmware::state(&mut fake_router(standing_robot)).expect("state");
     let w = state.angular_velocity.expect("gyro");
     let expect = [-3.0f64.to_radians(), 0.0, 12.5f64.to_radians()];
     assert!(w.iter().zip(expect).all(|(a, b)| (a - b).abs() < 1e-12), "{w:?}");
     assert_eq!(state.joints.len(), 15);
     assert!(state.joints.iter().all(|j| j.is_some_and(|r| (r - 0.5f64.to_radians()).abs() < 1e-12)));
+    assert_eq!(state.joint_speeds.len(), 15);
+    assert!(state.joint_speeds.iter().all(|s| s.is_some_and(|w| (w - 2f64.to_radians()).abs() < 1e-12)));
 
     let state = firmware::state(&mut fake_router(standing_robot_without_gyro)).expect("state");
     assert_eq!(state.angular_velocity, None, "a missing gyro is not a zero");
+    let state = firmware::state(&mut fake_router(bare_board)).expect("state");
+    assert!(state.joint_speeds.iter().all(Option::is_none), "a servo that did not answer has no speed, not zero");
 
-    let old = firmware::state(&mut fake_router(protocol_2_firmware));
-    assert!(matches!(old, Err(BridgeError::Shape(why)) if why.contains("protocol 2")));
+    let old = firmware::state(&mut fake_router(protocol_3_firmware));
+    assert!(matches!(old, Err(BridgeError::Shape(why)) if why.contains("needs 4")));
 }
 
 #[test]
@@ -258,17 +319,13 @@ fn manifest(edit: fn(&mut serde_json::Value)) -> Manifest {
     Manifest::parse(&d, std::path::Path::new(TINY)).expect("a manifest")
 }
 
-/// The same network, described without a gyro: its three slots become part of the command.
+/// The same network, described without a gyro: its three gyro slots read gravity again instead.
 fn no_gyro(d: &mut serde_json::Value) {
-    let obs = d["observations"].as_array_mut().expect("observations");
-    obs.retain(|o| o["name"] != "base_ang_vel");
-    if let Some(command) = obs.iter_mut().find(|o| o["name"] == "command") {
-        command["width"] = 16.into();
-    }
+    d["observations"][4]["source"] = "projected_gravity".into();
 }
 
 fn level(joints: [f64; 15]) -> Sensed {
-    Sensed { joints: joints.iter().map(|&j| Some(j)).collect(), pitch_roll: Some((0.0, 0.0)), angular_velocity: Some([0.0; 3]) }
+    Sensed { joints: joints.iter().map(|&j| Some(j)).collect(), pitch_roll: Some((0.0, 0.0)), angular_velocity: Some([0.0; 3]), ..Sensed::default() }
 }
 
 #[test]
@@ -288,11 +345,16 @@ fn a_policy_that_does_not_fit_the_robot_or_the_model_is_refused() {
     // joints in another order
     let swapped = manifest(|d| d["joints"]["policy_order"].as_array_mut().expect("joints").swap(0, 1));
     assert!(matches!(Policy::load(swapped, &robot), Err(PolicyError::Mismatch(_))));
-    // an observation layout the network was not built for (60 values, the model takes 61)
-    let short = manifest(|d| d["observations"][5]["width"] = 12.into());
+    // an observation layout the network was not built for (48 values, the model takes 51)
+    let short = manifest(|d| {
+        d["observations"].as_array_mut().expect("observations").remove(4);
+    });
     assert!(matches!(Policy::load(short, &robot), Err(PolicyError::Mismatch(_))));
     // a default pose the robot cannot hold: left hip yaw at -30 degrees, its limit is -6.3
-    let outside = manifest(|d| d["joints"]["default_pos"][0] = (-30f64).to_radians().into());
+    let outside = manifest(|d| {
+        d["joints"]["default_pos"][0] = (-30f64).to_radians().into();
+        d["action"]["offset"][0] = d["joints"]["default_pos"][0].clone();
+    });
     assert!(matches!(Policy::load(outside, &robot), Err(PolicyError::Mismatch(_))));
     // a model file that is not there
     assert!(matches!(Policy::load(manifest(|d| d["onnx"]["file"] = "/nonexistent.onnx".into()), &robot), Err(PolicyError::Load(_))));
@@ -307,7 +369,7 @@ fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
     joints[0] = 0.2;
     joints[1] = -0.3;
     joints[14] = 0.4; // the beak: not the policy's to move
-    let targets = policy.act(&level(joints), &[0.0; 13], 0.02).expect("act");
+    let targets = policy.act(&level(joints), &[0.0; 3], 0.02).expect("act");
     assert_eq!(targets.len(), 15);
     let scale = 10f64.to_radians();
     let expect = |action: f64| action * scale;
@@ -318,34 +380,66 @@ fn the_policy_turns_an_observation_into_targets_we_can_compute_by_hand() {
 
     // the second tick sees joint speeds and the previous action
     joints[0] = 0.21;
-    let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
-    assert_eq!(obs.len(), 61);
+    let obs = policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe");
+    assert_eq!(obs.len(), 51);
     assert!((f64::from(obs[14]) - 0.5).abs() < 1e-4, "speed of joint 0: 0.01 rad in 0.02 s");
     assert!((f64::from(obs[28]) - 0.2).abs() < 1e-6, "last action of joint 0");
     assert!((f64::from(obs[44]) + 1.0).abs() < 1e-6, "gravity z when level");
 
     // after a reset there is no previous tick to difference against
     policy.reset();
-    let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
+    let obs = policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe");
     assert_eq!(obs[14], 0.0);
     assert_eq!(obs[28], 0.0);
 }
 
 #[test]
+fn the_policy_takes_joint_speeds_from_the_servos_when_they_report_them() {
+    let robot = robot();
+    let mut policy = Policy::load(manifest(|_| ()), &robot).expect("policy");
+    let mut sensed = level([0.0; 15]);
+    sensed.joint_speeds = (0..15).map(|j| Some(0.1 * j as f64)).collect();
+    // Even on the first tick, when there is nothing to difference against.
+    let obs = policy.observe(&sensed, &[0.0; 3], 0.02).expect("observe");
+    assert!((0..14).all(|j| (f64::from(obs[14 + j]) - 0.1 * j as f64).abs() < 1e-6), "{:?}", &obs[14..28]);
+    // A joint whose servo gave no speed falls back to the difference from the previous tick.
+    sensed.joint_speeds[3] = None;
+    sensed.joints[3] = Some(0.01);
+    let obs = policy.observe(&sensed, &[0.0; 3], 0.02).expect("observe");
+    assert!((f64::from(obs[14 + 3]) - 0.5).abs() < 1e-5, "0.01 rad in 0.02 s: {}", obs[17]);
+}
+
+#[test]
 fn the_action_is_clipped_before_it_is_scaled() {
     let robot = robot();
-    let mut policy = Policy::load(manifest(|d| d["action"]["clip"] = 0.15.into()), &robot).expect("policy");
+    let mut policy = Policy::load(manifest(|d| d["action"]["clip"] = serde_json::json!([0.12, 0.15])), &robot).expect("policy");
     let mut joints = [0.0; 15];
-    joints[0] = 0.2; // raw action 0.2
-    let targets = policy.act(&level(joints), &[0.0; 13], 0.02).expect("act");
+    joints[0] = 0.2; // raw action 0.2: above the clip
+    let targets = policy.act(&level(joints), &[0.0; 3], 0.02).expect("act");
     assert!((targets[0] - 0.15 * 10f64.to_radians()).abs() < 1e-9);
+    assert!((targets[2] - 0.12 * 10f64.to_radians()).abs() < 1e-9, "raw action 0.1: below the clip");
+}
+
+#[test]
+fn the_default_pose_is_counted_once() {
+    // trainnr-deploy/1: target = default_pos + scale * action, and action.offset repeats default_pos.
+    let robot = robot();
+    let home = |d: &mut serde_json::Value| {
+        d["joints"]["default_pos"][2] = 0.3.into();
+        d["action"]["offset"][2] = 0.3.into();
+    };
+    let mut policy = Policy::load(manifest(home), &robot).expect("policy");
+    let mut joints = [0.0; 15];
+    joints[2] = 0.3; // at home: the network sees 0 and outputs 0.1
+    let targets = policy.act(&level(joints), &[0.0; 3], 0.02).expect("act");
+    assert!((targets[2] - (0.3 + 0.1 * 10f64.to_radians())).abs() < 1e-6, "{}", targets[2]);
 }
 
 #[test]
 fn a_missing_measurement_stops_the_policy_instead_of_becoming_a_zero() {
     let robot = robot();
     let mut policy = Policy::load(manifest(|_| ()), &robot).expect("policy");
-    let command = [0.0; 13];
+    let command = [0.0; 3];
     let mut silent = level([0.0; 15]);
     silent.joints[3] = None;
     assert!(matches!(policy.act(&silent, &command, 0.02), Err(PolicyError::Missing(_))));
@@ -367,7 +461,7 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     // A policy that needs no gyro runs on every tick, and its targets pass the guards.
     let mut policy = Policy::load(manifest(no_gyro), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
-    let command = [0.0; 16];
+    let command = [0.0; 3];
     let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(300), Exchange::Step, Some((&mut policy, &command)), &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
@@ -378,7 +472,7 @@ fn the_loop_runs_a_policy_and_holds_when_the_policy_cannot_run() {
     // A policy that needs the gyro runs when the firmware reports it ...
     let mut needs_gyro = Policy::load(manifest(|_| ()), &robot).expect("policy");
     let mut bridge = fake_router(standing_robot);
-    let command = [0.0; 13];
+    let command = [0.0; 3];
     let stats = control::run(&mut bridge, &robot, period, Duration::from_millis(200), Exchange::Step, Some((&mut needs_gyro, &command)), &mut Sinks::none());
     assert_eq!(stats.errors, 0);
     assert_eq!(stats.policy_ran, stats.ticks);
@@ -423,7 +517,7 @@ fn the_status_light_shows_what_the_loop_did_and_goes_out_with_duckd() {
         assert_eq!(lit(&leds), [false, true, false]);
         // a policy that needs the gyro, which is not reporting: yellow
         let mut needs_gyro = Policy::load(manifest(|_| ()), &robot).expect("policy");
-        let command = [0.0; 13];
+        let command = [0.0; 3];
         control::run(&mut fake_router(standing_robot_without_gyro), &robot, Duration::from_millis(10), Duration::from_millis(50), Exchange::State, Some((&mut needs_gyro, &command)), &mut sinks);
         assert_eq!(lit(&leds), [true, true, false]);
         // the policy running: blue
@@ -513,10 +607,15 @@ fn a_recording_holds_every_tick_as_ros2_messages() {
     assert_eq!(u32_at(20), 15, "one name per joint");
     let name_len = u32_at(24) as usize;
     assert_eq!(&data[28..28 + name_len - 1], b"left_hip_yaw");
-    let tail = &data[data.len() - 8 * 15 - 8..];
-    let positions: Vec<f64> = tail[..8 * 15].chunks(8).map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes"))).collect();
+    // From the end: effort (empty), fifteen velocities, their length and padding to 8 bytes, fifteen positions.
+    let f64s = |bytes: &[u8]| bytes.chunks(8).map(|b| f64::from_le_bytes(b.try_into().expect("8 bytes"))).collect::<Vec<f64>>();
+    let end = data.len() - 4;
+    assert_eq!(&data[end..], &[0u8; 4], "effort is empty");
+    let velocities = f64s(&data[end - 8 * 15..end]);
+    assert!(velocities.iter().all(|v| (v - 2f64.to_radians()).abs() < 1e-12), "the servos' own speeds: {velocities:?}");
+    assert_eq!(u32_at(end - 8 * 15 - 8), 15, "one velocity per joint");
+    let positions = f64s(&data[end - 8 * 15 - 8 - 8 * 15..end - 8 * 15 - 8]);
     assert!(positions.iter().all(|p| (p - 0.5f64.to_radians()).abs() < 1e-12), "{positions:?}");
-    assert_eq!(&tail[8 * 15..], &[0u8; 8], "velocity and effort are empty");
     // DUCK_KEEP_RECORDING=<path> keeps a copy, to check the file with another MCAP / ROS 2 reader.
     if let Ok(keep) = std::env::var("DUCK_KEEP_RECORDING") {
         std::fs::copy(&path, keep).expect("keep a copy");
@@ -629,17 +728,17 @@ fn a_trainnr_export_is_read_as_trainnr_wrote_it() {
     // deploy.json exactly as trainnr's export_deployment wrote it (a 50-iteration pipeline check on Pollen's microduck,
     // whose joints are named and ordered as ours; the network itself is not kept here).
     let m = Manifest::load(TRAINNR_EXPORT).expect("trainnr's manifest");
-    assert_eq!(m.control_hz, 50.0);
+    assert!((m.control_hz - 50.0).abs() < 1e-9, "one tick per physics_timestep_s * decimation");
     assert_eq!(m.joints, JOINT_NAMES[..14].iter().map(|s| s.to_string()).collect::<Vec<_>>());
     assert_eq!(m.observation_size(), 51);
     assert_eq!(m.command_size(), 3);
     let terms: Vec<_> = m.observation.iter().map(|o| o.term).collect();
     assert_eq!(
         terms,
-        [Term::AngularVelocity, Term::ProjectedGravity, Term::JointPositions, Term::JointVelocities, Term::LastAction, Term::Command { size: 3 }]
+        [Term::AngularVelocity, Term::ProjectedGravity, Term::JointPositions, Term::JointVelocities, Term::LastAction, Term::Command]
     );
     assert_eq!(m.action_clip, None);
-    assert_eq!(m.command_ranges, Some([(-0.4, 0.4), (-0.3, 0.3), (-1.0, 1.0)]));
+    assert_eq!(m.command_ranges, [(-0.4, 0.4), (-0.3, 0.3), (-1.0, 1.0)]);
     assert!(m.onnx.ends_with("policy.onnx"));
 }
 
@@ -658,24 +757,44 @@ fn a_deployment_this_runtime_cannot_honour_is_refused() {
     assert!(matches!(refused(|d| d["observations"][2]["width"] = 15.into()), Some(PolicyError::Mismatch(_))));
     assert!(matches!(refused(|d| d["joints"]["action_to_ctrl"][0] = 1.into()), Some(PolicyError::Mismatch(_))));
     assert!(matches!(refused(|d| d["action"]["kind"] = "joint velocity target".into()), Some(PolicyError::Mismatch(_))));
+    // what trainnr's own loader refuses: a key or a source it does not know, a missing required key
+    assert!(matches!(refused(|d| d["gains"] = 1.into()), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["observations"][0]["source"] = "sensor robot/imu_lin_vel".into()), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["observations"][5]["source"] = "gait_phase".into()), Some(PolicyError::Mismatch(_))));
+    for key in ["run", "robot", "scene", "commands", "control"] {
+        let mut d = base.clone();
+        d.as_object_mut().expect("object").remove(key);
+        let why = Manifest::parse(&d, std::path::Path::new(".")).expect_err("refused").to_string();
+        assert!(why.contains(key), "{why}");
+    }
+    // rules the format states, broken
+    assert!(matches!(refused(|d| d["action"]["offset"][0] = 0.1.into()), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["action"]["clip"] = 1.0.into()), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["action"]["clip"] = serde_json::json!([1.0, -1.0])), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["observations"][0]["scale"] = serde_json::json!([1.0, 2.0])), Some(PolicyError::Mismatch(_))));
+    assert!(matches!(refused(|d| d["commands"]["twist"]["lin_vel_y"] = serde_json::Value::Null), Some(PolicyError::Mismatch(_))));
 }
 
 #[test]
-fn observation_terms_are_clipped_then_scaled_as_in_training() {
+fn observation_terms_are_scaled_then_clipped_as_trainnr_specifies() {
     let robot = robot();
     let mut policy = Policy::load(
         manifest(|d| {
-            d["observations"][0]["clip"] = 0.1.into();
             d["observations"][0]["scale"] = 2.0.into();
+            d["observations"][0]["clip"] = serde_json::json!([-0.1, 0.5]);
+            d["observations"][3]["scale"] = serde_json::json!([1.0, 1.0, 3.0]);
         }),
         &robot,
     )
     .expect("policy");
     let mut joints = [0.0; 15];
-    joints[0] = 0.3; // clipped to 0.1, then doubled
-    joints[1] = 0.05; // inside the clip: doubled
-    let obs = policy.observe(&level(joints), &[0.0; 13], 0.02).expect("observe");
-    assert!((f64::from(obs[0]) - 0.2).abs() < 1e-6 && (f64::from(obs[1]) - 0.1).abs() < 1e-6);
+    joints[0] = 0.3; // doubled to 0.6, clipped to 0.5
+    joints[1] = -0.04; // doubled to -0.08: inside the clip
+    joints[2] = -0.3; // doubled to -0.6, clipped to -0.1
+    let obs = policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe");
+    let near = |i: usize, v: f64| (f64::from(obs[i]) - v).abs() < 1e-6;
+    assert!(near(0, 0.5) && near(1, -0.08) && near(2, -0.1), "{:?}", &obs[..3]);
+    assert!(near(42, 0.0) && near(44, -3.0), "gravity, scaled per value: {:?}", &obs[42..45]);
 }
 
 #[test]
@@ -687,6 +806,4 @@ fn a_command_outside_what_the_policy_was_trained_on_is_refused() {
     assert_eq!(faster.to_string(), "command refused: value 0 is 0.5; the policy was trained on -0.4 to 0.4");
     assert!(matches!(m.check_command(&[0.0, 0.0, f64::NAN]), Err(PolicyError::Command(_))));
     assert!(matches!(m.check_command(&[0.1, 0.0]), Err(PolicyError::Command(_))), "too few values");
-    // without stated ranges only the count and finiteness are checked
-    assert!(manifest(|_| ()).check_command(&[9.0; 13]).is_ok());
 }

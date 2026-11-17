@@ -217,24 +217,23 @@ Result Controller::sit(uint32_t now_ms, const ImuSample& imu) {
   return Result::kOk;
 }
 
-void Controller::poll_one_servo(uint32_t now_ms) {
-  // The next joint that has a servo: on a bench with a few servos assigned, each is read every turn instead of
-  // waiting behind the joints that have none.
-  int j = -1;
-  for (int k = 0; k < kNumJoints && j < 0; ++k) {
-    const int candidate = (poll_joint_ + k) % kNumJoints;
-    if (cfg_.joints[candidate].servo_id != kServoIdUnassigned) j = candidate;
-  }
-  if (j < 0) return;  // no servo assigned at all
-  poll_joint_ = (j + 1) % kNumJoints;
-  Feedback fb;
-  if (bus_.read_feedback(cfg_.joints[j].servo_id, &fb) == BusError::kOk) {
-    servo_[j].got(fb, now_ms);
-    measured_[j] = step_to_deg(cfg_, j, fb.position);
-    if (mode_ == Mode::kArmed) faults_.on_feedback(j, fb, now_ms);
-  } else {
-    servo_[j].ok = false;
-    if (mode_ == Mode::kArmed) faults_.on_comm_fail(j);
+void Controller::poll_servos(uint32_t now_ms, int count) {
+  // Round-robin over the joints that have a servo, each at most once per call: on a bench with a few servos
+  // assigned, each is read every call instead of waiting behind the joints that have none.
+  for (int k = 0, read = 0; k < kNumJoints && read < count; ++k) {
+    const int j = poll_joint_;
+    poll_joint_ = (poll_joint_ + 1) % kNumJoints;
+    if (cfg_.joints[j].servo_id == kServoIdUnassigned) continue;
+    ++read;
+    Feedback fb;
+    if (bus_.read_feedback(cfg_.joints[j].servo_id, &fb) == BusError::kOk) {
+      servo_[j].got(fb, now_ms);
+      measured_[j] = step_to_deg(cfg_, j, fb.position);
+      if (mode_ == Mode::kArmed) faults_.on_feedback(j, fb, now_ms);
+    } else {
+      servo_[j].ok = false;
+      if (mode_ == Mode::kArmed) faults_.on_comm_fail(j);
+    }
   }
 }
 
@@ -265,16 +264,19 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   if (mode_ == Mode::kDisarmed) {
     // Telemetry only, at a low rate so a bench without servos costs little.
     flags_ = imu_ok_ ? 0 : kStatImuStale;
+    // A servo that is assigned but absent costs a reply timeout per read, so this rate stays low.
     if (now_ms - idle_poll_ms_ >= 100) {
       idle_poll_ms_ = now_ms;
-      poll_one_servo(now_ms);
+      poll_servos(now_ms, 1);
     }
     return;
   }
 
   // ---- ARMED ----
+  // Every servo answered at arming. Reading reads_per_tick of them each tick keeps every joint fresh for the
+  // Linux side's policy (8 a tick: all fifteen every 20 ms).
   uint16_t flags = 0;
-  poll_one_servo(now_ms);
+  poll_servos(now_ms, cfg_.servo.reads_per_tick);
 
   // Linux side silent: stop following its targets, hold what we have.
   if (now_ms - last_cmd_ms_ > cfg_.cmd_timeout_ms) {

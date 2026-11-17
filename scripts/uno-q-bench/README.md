@@ -9,4 +9,5 @@ Scripts that measure what the Arduino UNO Q can run. Results and how to reproduc
 | `bench_onnx.py` | board | Times ONNX models on the CPU with ONNX Runtime |
 | `bench_ncnn.py` | board | Times ncnn models on the CPU and on the GPU through Vulkan |
 | `bench_llm.sh` | board | Times small language models with llama.cpp |
-| `results/` | | Raw numbers from 2026-11-14 |
+| `link_speed.sh` | board (sudo) | Times the link to the microcontroller at several speeds, with and without real-time settings and the LED matrix; puts the board back as it was. Results: [runtime/README.md](../../runtime/README.md) |
+| `results/` | | Raw numbers: compute from 2026-11-14, link speed from 2026-11-17 |

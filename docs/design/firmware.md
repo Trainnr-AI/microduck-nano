@@ -50,9 +50,15 @@ tick (`src/duck/safety.cpp`):
 | Sit / stand | Only the firmware's own 3 s straight-line move between the STAND and SIT keyframes; leg targets from Linux are ignored unless the robot is standing | JOINT_LIMITS.md section 2 |
 
 Faults (`config/robot.json`, `faults`): load above 90 % for 1 s, 65 degC, under 4.3 V, the servo's own overload / overheat
-flag, a servo not answering 5 times in a row, or the trunk more than 30 deg off the planned pitch (or rolled 30 deg) for
+flag, a servo not answering 5 reads in a row (about 0.1 s armed), or the trunk more than 30 deg off the planned pitch (or rolled 30 deg) for
 0.1 s. Any of them switches **torque off on every servo** and latches; clearing a fault leaves the robot disarmed.
 Linux silent for 0.5 s: hold the pose, torque stays on (a standing robot should not collapse because a process died).
+
+Servo reads: armed, `servo.reads_per_tick` servos (8) are read every 10 ms tick, round-robin, each at most once a
+tick, so all fifteen every 20 ms: every joint at 50 Hz, the policy's rate. Each read is the full feedback block
+(position, speed, load, voltage, temperature), because the fault checks need all of it. Disarmed, one servo every
+100 ms: a servo that is assigned but absent costs a reply timeout per read. Linux's calls are answered between ticks,
+so the reads delay them; the worst tick in `duck_status` shows by how much (bench checklist, step 13).
 
 Things to know, because they differ from what you might assume:
 
@@ -84,8 +90,8 @@ Call them from Python with `duck_client.Duck(Bridge)`, or directly: `Bridge.call
 |---|---|---|
 | `duck_info` | protocol, motion build, EEPROM build, joint table ready, IMU present, servo UART is Serial1, bench build | the last word is absent from firmware before the bench build existed |
 | `duck_status` | mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, balance x10, worst tick (us) | |
-| `duck_state` | 28 integers | protocol 3. Everything a control tick needs in one reply: result (0), mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, worst tick in us, then 15 measured angles (degrees x10, -32768 = no answer), then the body angular velocity about x (forward), y (left), z (up) in degrees per second x10 (-32768 each when the gyro is absent, stale, or the IMU's mounting is not calibrated). Protocol 2 was the same without the gyro |
-| `duck_step(15 integers)` | 28 integers, as `duck_state` | protocol 3. One control tick in one round trip: targets in degrees x10, same path as `duck_set_targets` (safety layer, ignored unless armed); `result` says what happened |
+| `duck_state` | 43 integers | protocol 4. Everything a control tick needs in one reply: result (0), mode, posture, fault, fault joint, flags, IMU ok, pitch x10, roll x10, worst tick in us, then 15 measured angles (degrees x10, -32768 = no answer), then the body angular velocity about x (forward), y (left), z (up) in degrees per second x10 (-32768 each when the gyro is absent, stale, or the IMU's mounting is not calibrated), then 15 joint speeds as each servo reported them in the same read as its angle (degrees per second x10, in the joint's direction; register 58 taken as steps/s, unconfirmed; -32768 = no answer). Protocol 3 was the same without the speeds, protocol 2 without the gyro either |
+| `duck_step(15 integers)` | 43 integers, as `duck_state` | protocol 4. One control tick in one round trip: targets in degrees x10, same path as `duck_set_targets` (safety layer, ignored unless armed); `result` says what happened |
 | `duck_joints` / `duck_setpoints` | 15 angles, degrees x10 | measured (-32768 = no answer) / commanded after the safety layer |
 | `duck_health` | 15 x (load 0.1 %, voltage 0.1 V, temperature degC) | |
 | `duck_ping(id)`, `duck_scan(first, last)`, `duck_read(id, addr, n)` | bus result / IDs found / register bytes | read-only bench tools; refused while armed |

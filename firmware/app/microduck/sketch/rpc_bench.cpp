@@ -51,7 +51,7 @@ BenchWords rpc_bench_step(int32_t deg10) {
   if (s.joint >= 0) {
     const duck::JointConfig& j = g_config.joints[s.joint];
     out[5] = tenths(duck::step_to_deg(g_config, s.joint, fb.position));
-    out[6] = tenths(static_cast<float>(fb.speed) * j.direction / g_config.servo.steps_per_deg);
+    out[6] = tenths(duck::speed_to_dps(g_config, s.joint, fb.speed));
     out[7] = fb.load * j.direction;
   }
   out[8] = fb.voltage_dv;

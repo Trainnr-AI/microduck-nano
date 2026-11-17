@@ -26,6 +26,11 @@ constexpr int32_t code(E e) {
 // One joint's measured angle x10, or kMissing where the servo did not answer.
 inline int32_t joint_word(int j) { return g_ctl.feedback_valid(j) ? tenths(g_ctl.measured_deg()[j]) : kMissing; }
 
+// One joint's speed as its servo reported it in the same read, degrees per second x10, or kMissing.
+inline int32_t speed_word(int j) {
+  return g_ctl.feedback_valid(j) ? tenths(duck::speed_to_dps(g_config, j, g_ctl.feedback(j).speed)) : kMissing;
+}
+
 // The longest control tick since the last call, in us; the next call starts over.
 inline int32_t take_worst_tick() {
   const int32_t worst = static_cast<int32_t>(g_tick_us_max);

@@ -7,7 +7,7 @@
 namespace duck {
 
 static const RobotConfig kRobotConfig = {
-  /* servo */ {3.41f, 0, 1023, 1000000u, 0},
+  /* servo */ {3.41f, 0, 1023, 1000000u, 0, 8},
   /* joints: servo id, zero step, direction, calibrated, min, max, max speed */ {
     {kServoIdUnassigned, 512, 1, false, -6.3f, 19.0f, 180.0f},  // left_hip_yaw
     {kServoIdUnassigned, 512, 1, false, -12.0f, 19.5f, 180.0f},  // left_hip_roll

@@ -37,4 +37,8 @@ float step_to_deg(const RobotConfig& cfg, int joint, int16_t step) {
   return static_cast<float>(j.direction * (step - j.zero_step)) / cfg.servo.steps_per_deg;
 }
 
+float speed_to_dps(const RobotConfig& cfg, int joint, int16_t speed) {
+  return static_cast<float>(cfg.joints[joint].direction * speed) / cfg.servo.steps_per_deg;
+}
+
 }  // namespace duck
