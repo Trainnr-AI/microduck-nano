@@ -58,6 +58,9 @@ usage:
 
 type Res<T = ()> = Result<T, Box<dyn Error>>;
 
+/// How long one call to the firmware may take outside the control loop.
+const CALL_TIMEOUT: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Status,
@@ -193,7 +196,7 @@ fn main() -> ExitCode {
 
 /// Connect to the firmware through the board's router and run `command` with it.
 fn with_bridge(args: &Args, command: impl FnOnce(&mut Bridge<UnixStream>) -> Res) -> Res {
-    command(&mut Bridge::connect(&args.socket, Duration::from_millis(500))?)
+    command(&mut Bridge::connect(&args.socket, CALL_TIMEOUT)?)
 }
 
 /// "median / 95th / max" of sorted microsecond times, in milliseconds with `decimals` places ("-" when empty).
@@ -253,14 +256,18 @@ fn time(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         ("duck_step", 28, zeros()),
         ("duck_health", 45, vec![]),
     ] {
+        // A failed call is counted, not fatal: how often the link drops a reply is part of what this measures.
         let mut times = Vec::with_capacity(args.count as usize);
+        let mut failed = 0;
         for _ in 0..args.count {
             let start = Instant::now();
-            bridge.call(method, params.clone())?;
-            times.push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            match bridge.call(method, params.clone()) {
+                Ok(_) => times.push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)),
+                Err(_) => failed += 1,
+            }
         }
         times.sort_unstable();
-        println!("{method:12} [{values:2} values]  {}   ({} calls)", summary(&times, 2), times.len());
+        println!("{method:12} [{values:2} values]  {}   ({} calls, {failed} failed)", summary(&times, 2), times.len());
     }
     Ok(())
 }
@@ -329,7 +336,10 @@ fn run(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
     // Announce on the matrix; an older firmware without duck_say just does not show it.
     let _ = firmware::say(bridge, if policy.is_some() { "DUCKD POLICY" } else { "DUCKD RUN" });
     let duration = Duration::from_secs_f64(args.seconds);
+    // In the loop a reply is waited for one tick at most: a lost one costs that tick, not half a second of them.
+    bridge.set_timeout(period)?;
     let stats = control::run(bridge, &robot, period, duration, args.exchange, policy.as_mut().map(|p| (p, command.as_slice())), &mut sinks);
+    bridge.set_timeout(CALL_TIMEOUT)?;
     drop(sinks.led); // the light goes out with the loop
     if let (Some(recorder), Some(path)) = (sinks.recorder, &args.record) {
         println!("recorded {} ticks to {path}", recorder.finish()?);

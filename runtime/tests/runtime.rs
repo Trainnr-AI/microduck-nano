@@ -45,6 +45,60 @@ fn fake_router(answer: fn(&str) -> Option<Value>) -> Bridge<UnixStream> {
     Bridge::new(client)
 }
 
+#[test]
+fn a_late_reply_to_an_earlier_call_is_dropped_not_taken_as_this_ones() {
+    // Before each answer the router sends the answer to the previous request, as a reply that missed its timeout does.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        while let Ok(Value::Array(req)) = rmpv::decode::read_value(&mut server) {
+            let id = req.get(1).and_then(Value::as_u64).unwrap_or(0);
+            for (reply_to, answer) in [(id - 1, "stale"), (id, "fresh")] {
+                let reply = Value::Array(vec![Value::from(1), Value::from(reply_to), Value::Nil, Value::from(answer)]);
+                rmpv::encode::write_value(&mut server, &reply).expect("write");
+            }
+        }
+    });
+    client.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+    let mut bridge = Bridge::new(client);
+    for _ in 0..3 {
+        assert_eq!(bridge.call("duck_info", vec![]).expect("a reply").as_str(), Some("fresh"));
+    }
+
+    // A reply to a request not yet sent is still an error.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        let _ = rmpv::decode::read_value(&mut server);
+        rmpv::encode::write_value(&mut server, &Value::Array(vec![Value::from(1), Value::from(9), Value::Nil, Value::Nil])).expect("write");
+    });
+    client.set_read_timeout(Some(Duration::from_secs(2))).expect("timeout");
+    assert!(matches!(Bridge::new(client).call("duck_info", vec![]), Err(BridgeError::WrongId { sent: 1, got: 9 })));
+}
+
+#[test]
+fn a_lost_reply_costs_the_loop_one_tick() {
+    // The router never answers the third request, as when the link drops a reply's bytes.
+    let (client, mut server) = UnixStream::pair().expect("socket pair");
+    thread::spawn(move || {
+        let mut n = 0;
+        while let Ok(Value::Array(req)) = rmpv::decode::read_value(&mut server) {
+            n += 1;
+            if n == 3 {
+                continue;
+            }
+            let method = req.get(2).and_then(Value::as_str).unwrap_or("").to_string();
+            let reply = Value::Array(vec![Value::from(1), req[1].clone(), Value::Nil, bare_board(&method).unwrap_or(Value::Nil)]);
+            rmpv::encode::write_value(&mut server, &reply).expect("write");
+        }
+    });
+    let mut bridge = Bridge::new(client);
+    let period = Duration::from_millis(10);
+    bridge.set_timeout(period).expect("timeout");
+    let stats = control::run(&mut bridge, &robot(), period, Duration::from_millis(300), Exchange::Step, None, &mut Sinks::none());
+    assert_eq!(stats.errors, 1, "{:?}", stats.last_error);
+    assert!(stats.ticks >= 25, "the loop kept its rate: {} ticks in 300 ms", stats.ticks);
+    assert!(stats.missed_deadlines <= 1);
+}
+
 fn ints(v: &[i64]) -> Value {
     Value::Array(v.iter().map(|&x| Value::from(x)).collect())
 }
