@@ -16,7 +16,9 @@ the limits and the faults.
 | `src/firmware.rs` | Typed calls to the firmware: info, status, joint angles, the one-call-per-tick `state` and `step`, the LED matrix's `say`, the bench servo |
 | `src/robot.rs` | Reads `firmware/config/robot.json` and builds rigrs joint specifications, as four chains (rigrs carries at most six joints per chain today) |
 | `src/policy.rs` | The policy runner: reads trainnr's `deploy.json`, checks it against the robot and the model, assembles the observation, runs inference (pure-Rust `tract`), clips and scales the action |
-| `src/control.rs` | The fixed-rate loop: read state, get targets (hold in place, or from a policy), pass them through each chain's rigrs `Guard`, account for time |
+| `src/control.rs` | The fixed-rate loop: read state, get targets (hold in place, or from a policy), pass them through each chain's rigrs `Guard`, then through the limits over several joints, account for time |
+| `limits/` (crate `duck-limits`) | The limits over several joints, as `no_std` Rust with no allocation: each leg's hip map, knee x ankle, both legs, and `settle`, which keeps as much of a move as the rules allow. The same decisions as the firmware's C++ (`safety.cpp`), proved on 4,000 shared cases (`tests/data/leg_rule_vectors.txt`, written by `make -C firmware/tests leg-vectors`). Builds for the board's microcontroller (`thumbv8m.main-none-eabihf`); written to move into rigrs |
+| `src/limits.rs` | Loads those limits from `robot.json` and applies them to the targets the loop sends: a leg joint the rules hold stays at the pose last sent |
 | `src/record.rs` | MCAP recordings of ROS 2 messages for trainnr (`--record`) |
 | `src/bench.rs` | One servo moved on the bench for system identification (`duckd bench`) |
 | `src/status_led.rs` | The board's Linux-side RGB LED as `duckd`'s status light |
@@ -26,7 +28,7 @@ the limits and the faults.
 ## Build and test
 
 ```sh
-cargo test                       # on a PC
+cargo test --workspace           # on a PC
 ```
 
 For the board, a static 64-bit Arm binary. The inference library has assembly parts, so the cross-build needs a
