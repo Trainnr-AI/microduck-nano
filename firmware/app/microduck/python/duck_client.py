@@ -21,7 +21,7 @@ MODES = ["DISARMED", "ARMED", "FAULT"]
 BENCH_MODES = ["OFF", "ARMED", "FAULT"]
 POSTURES = ["UNKNOWN", "STANDING", "SITTING", "MOVING_TO_SIT", "MOVING_TO_STAND", "RETURNING_TO_STAND"]
 FAULTS = ["none", "overload", "over-temperature", "under-voltage", "servo status", "servo not answering",
-          "fall", "bus write"]
+          "fall", "bus write", "position jump"]
 RESULTS = ["ok", "firmware built without motion", "bad key", "joint table not calibrated", "servo missing",
            "IMU required", "fault latched", "not armed", "already armed", "wrong posture",
            "not at the STAND keyframe (call stand() first)", "facing uphill: sit refused", "busy", "bus error"]

@@ -1355,6 +1355,126 @@ static void test_bench_servo() {
   CHECK(fake.writes.size() == writes && b.idle());
 }
 
+static void test_position_jump_is_a_fault() {
+  const FaultConfig& fc = kRobotConfig.faults;
+  auto feedback_at = [](int position) {
+    Feedback fb = {};
+    fb.position = static_cast<int16_t>(position);
+    fb.voltage_dv = 50;
+    fb.temperature_c = 25;
+    return fb;
+  };
+  // A servo moving flat out (2000 steps/s, read every 20 ms) is not a jump.
+  {
+    FaultMonitor m(fc);
+    for (int i = 0; i < 20; ++i) m.on_feedback(kLKnee, feedback_at(100 + 40 * i), 1000 + 20 * static_cast<uint32_t>(i));
+    CHECK(m.fault() == Fault::kNone);
+    // A long gap between reads allows as much as the servo could have moved in it.
+    m.on_feedback(kLKnee, feedback_at(100), 3000);
+    CHECK(m.fault() == Fault::kNone);
+    // The same distance in one 20 ms read interval is a jump.
+    m.on_feedback(kLKnee, feedback_at(900), 3020);
+    CHECK(m.fault() == Fault::kPositionJump && m.fault_joint() == kLKnee);
+  }
+  // What a real SCS0009 returned while its horn sat outside the sensing arc (2026-11-18): noise that looks like a
+  // mid-range angle. Read at the armed rate it is caught within a few reads.
+  {
+    const int noise[] = {682, 611, 608, 607, 652, 682, 682, 664, 664, 618, 619, 601, 639, 638, 636, 634, 679};
+    FaultMonitor m(fc);
+    int reads = 0;
+    for (int v : noise) {
+      m.on_feedback(kHeadYaw, feedback_at(v), 5000 + 20 * static_cast<uint32_t>(reads));
+      ++reads;
+      if (m.fault() != Fault::kNone) break;
+    }
+    CHECK(m.fault() == Fault::kPositionJump && m.fault_joint() == kHeadYaw);
+    CHECK(reads <= 5);
+    // clear() forgets the last position: the first read after it is never a jump.
+    m.clear();
+    m.on_feedback(kHeadYaw, feedback_at(10), 6000);
+    CHECK(m.fault() == Fault::kNone);
+  }
+  // In the control loop: armed at STAND, one servo's position jumps; torque goes off everywhere and stays off.
+  {
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    r.run(20);
+    CHECK(r.ctl.status().mode == Mode::kArmed);
+    const uint8_t id = r.cfg.joints[kRAnkle].servo_id;
+    r.fake.servo[id].set_position(static_cast<uint16_t>(r.fake.servo[id].position() + 150));
+    r.run(5);
+    CHECK(r.ctl.status().mode == Mode::kFault && r.ctl.status().fault == Fault::kPositionJump);
+    CHECK(r.ctl.status().fault_joint == kRAnkle);
+    CHECK(r.fake.torque_count() == 0 && !r.bus.motion_allowed());
+  }
+}
+
+static void test_a_command_stamped_after_the_tick_is_not_silence() {
+  // The clock helper: a time a little after "now" is no time at all, not 49 days; the wrap of the clock is fine.
+  CHECK(!elapsed_over(1000, 1001, 500));
+  CHECK(!elapsed_over(1000, 600, 500));
+  CHECK(elapsed_over(1101, 600, 500));
+  CHECK(!elapsed_over(5, 0xFFFFFFF0u, 500));
+  CHECK(elapsed_over(600, 0xFFFFFFF0u, 500));
+  // A bench servo whose command arrives a millisecond after the tick's own time stays armed (on the board the
+  // command is stamped when it arrives, the tick when the loop started), and real silence still switches it off.
+  RobotConfig c = kRobotConfig;
+  c.joints[kLKnee].servo_id = 7;
+  c.joints[kLKnee].zero_step = 512;
+  c.joints[kLKnee].direction = 1;
+  c.joints[kLKnee].calibrated = true;
+  FakeBus fake;
+  ScsBus bus(fake);
+  fake.add(7);
+  BenchServo b(c, bus, true);
+  uint32_t now = 1000;
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  for (int i = 0; i < 300; ++i) {
+    now += 10;
+    CHECK(b.set_target(5.0f, now + 1) == Result::kOk);
+    b.tick(now, false);
+  }
+  CHECK(b.armed());
+  for (int i = 0; i < 60; ++i) {
+    now += 10;
+    b.tick(now, false);
+  }
+  CHECK(!b.armed() && b.state().fault == Fault::kNone && fake.torque_count() == 0);
+  // A reply lost now and then is not a fault either: the servo is silent for one tick in every fifty, and the bench
+  // servo stays armed; silent for good, it is switched off as "not answering".
+  {
+    FakeBus lossy;
+    ScsBus lossy_bus(lossy);
+    lossy.add(7);
+    BenchServo lb(c, lossy_bus, true);
+    uint32_t t = 1000;
+    CHECK(lb.arm(kArmKey, kLKnee, t) == Result::kOk);
+    for (int i = 0; i < 500; ++i) {
+      t += 10;
+      lossy.servo[7].present = (i % 50) != 49;
+      CHECK(lb.set_target(3.0f, t) == Result::kOk || !lb.armed());
+      lb.tick(t, false);
+    }
+    CHECK(lb.armed());
+    lossy.servo[7].present = false;
+    for (int i = 0; i < 10 && lb.armed(); ++i) {
+      t += 10;
+      lb.set_target(3.0f, t);
+      lb.tick(t, false);
+    }
+    CHECK(!lb.armed() && lb.state().mode == BenchMode::kFault);
+    CHECK(lb.state().fault == Fault::kComm || lb.state().fault == Fault::kBusWrite);
+  }
+  // The robot's own command timeout, the same way: a heartbeat stamped just after the tick is not a timeout.
+  Rig r(calibrated_config());
+  r.arm_at(r.cfg.stand);
+  for (int i = 0; i < 100; ++i) {
+    r.ctl.heartbeat(r.now + 11);  // the tick below is at now + 10: the heartbeat is stamped 1 ms after it
+    r.run(1, false);
+    CHECK(!(r.ctl.status().flags & kStatCmdTimeout));
+  }
+}
+
 static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
@@ -1450,6 +1570,8 @@ int main(int argc, char** argv) {
   RUN(test_sit_and_stand);
   RUN(test_balance_in_the_loop);
   RUN(test_faults_switch_torque_off);
+  RUN(test_position_jump_is_a_fault);
+  RUN(test_a_command_stamped_after_the_tick_is_not_silence);
   RUN(test_command_timeout_holds);
   RUN(test_gyro_in_status);
   RUN(test_status_display);

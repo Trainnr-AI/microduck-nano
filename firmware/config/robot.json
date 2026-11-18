@@ -1705,7 +1705,7 @@
   "require_to_arm": true
  },
  "faults": {
-  "_note": "Any of these latches a fault and switches every servo's torque off. Thresholds are placeholders to tune on the bench.",
+  "_note": "Any of these latches a fault and switches every servo's torque off. Thresholds are placeholders to tune on the bench. position_jump: a position that changes between two reads by more than position_jump_steps_per_s x the time between them, plus position_jump_margin_steps, is a fault. A new SCS0009 on 5 V topped out at about 1240 steps/s (2026-11-18), and outside its sensing arc its position register returns noise that moves tens of steps from one read to the next.",
   "overload_load_pct": 90.0,
   "overload_seconds": 1.0,
   "over_temp_c": 65.0,
@@ -1713,7 +1713,9 @@
   "comm_fail_count": 5,
   "fall_pitch_error_deg": 30.0,
   "fall_roll_deg": 30.0,
-  "fall_seconds": 0.1
+  "fall_seconds": 0.1,
+  "position_jump_steps_per_s": 2500.0,
+  "position_jump_margin_steps": 8.0
  },
  "command": {
   "_note": "No command or heartbeat from the Linux side for this long: hold the current pose (not torque off).",

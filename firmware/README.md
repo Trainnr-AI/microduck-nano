@@ -43,10 +43,10 @@ the Linux side.
 make -C firmware/tests test        # needs g++ and make
 ```
 
-24 tests of the portable core against simulated servos (`tests/fake_servos.h`): packet bytes and parsing, the write
+26 tests of the portable core against simulated servos (`tests/fake_servos.h`): packet bytes and parsing, the write
 gates, degree / step conversion, clamps, rate limit, head interlock (including that yaw 2.5 with roll 15 cannot be
 reached), each leg's hip map against the tables in JOINT_LIMITS.md (the ankle included), the knee x ankle rule, the both-legs rule, random leg commands that never break a rule, sit and stand, the balance law, every fault switching torque
-off, the command timeout, the gyro turned into the body frame and reported only while fresh, what the status lights show, that armed every servo is read each two ticks and none twice in one, that a bench with a few servos reads each of them every idle poll, the bench build's single servo (only it written, clamped, rate-limited, off on a fault or on silence, impossible to arm in other builds), and that a default build or a placeholder config never sends a torque or goal write.
+off (a position that jumps faster than a servo can move among them, tested on readings from a real servo), the command timeout, the gyro turned into the body frame and reported only while fresh, what the status lights show, that armed every servo is read each two ticks and none twice in one, that a bench with a few servos reads each of them every idle poll, the bench build's single servo (only it written, clamped, rate-limited, off on a fault or on silence, impossible to arm in other builds), and that a default build or a placeholder config never sends a torque or goal write.
 The simulated servos follow the public protocol documents; passing these tests says nothing about a real SCS0009.
 
 ## Changing the robot's numbers

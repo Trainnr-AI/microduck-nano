@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // IMU glue: the firmware needs "which way is up"; the Linux side's policy also wants the gyro.
 #pragma once
+#include <stdint.h>
 
 // Starts the IMU. Returns false if it is absent or the build has no IMU support.
 bool imu_begin();
+// For an IMU that was not there (or not ready) at start-up: tries again, at most every two seconds, and only if
+// something now answers at its address. A try that finds the sensor blocks for about half a second, so call it only
+// while nothing is armed. Returns true once the IMU has started.
+bool imu_retry(uint32_t now_ms);
 
 enum ImuFresh { kImuFreshUp = 1, kImuFreshGyro = 2 };
 // Fetches what is waiting, both in the sensor's own frame:
@@ -26,6 +31,8 @@ struct ImuDiag {
   int start_stage;    // where the last start attempt stopped: 0 not tried, 1 the library's begin() failed,
                       // 2 the gravity report was refused, 3 started
   int start_attempts;
+  int bus_freed;      // times the firmware found the Qwiic bus held by a device and clocked it free
+  int bus_last;       // the last such attempt: 0 = the lines were free, 1 = freed, 2 = still held
 };
 ImuDiag imu_diag();
 

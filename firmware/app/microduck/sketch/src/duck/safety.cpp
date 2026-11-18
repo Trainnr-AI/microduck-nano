@@ -205,6 +205,7 @@ void FaultMonitor::clear() {
   for (int i = 0; i < kNumJoints; ++i) {
     overloaded_[i].reset();
     comm_fails_[i] = 0;
+    have_position_[i] = false;
   }
   tilt_bad_.reset();
 }
@@ -218,6 +219,18 @@ void FaultMonitor::on_feedback(int joint, const Feedback& fb, uint32_t now_ms) {
   if (overloaded_[joint].update(load_pct >= cfg_.overload_load_pct, now_ms, cfg_.overload_s)) {
     raise(Fault::kOverload, joint);
   }
+  // Position jump. Outside its sensing arc an SCS0009 returns noise that looks like a mid-range angle (seen on a
+  // servo, 2026-11-18): the only sign is that the position moves faster than the servo can.
+  if (have_position_[joint]) {
+    const float moved = absf(static_cast<float>(fb.position - last_position_[joint]));
+    const float seconds = static_cast<float>(now_ms - last_position_ms_[joint]) * 0.001f;
+    if (moved > cfg_.position_jump_steps_per_s * seconds + cfg_.position_jump_margin_steps) {
+      raise(Fault::kPositionJump, joint);
+    }
+  }
+  last_position_[joint] = fb.position;
+  last_position_ms_[joint] = now_ms;
+  have_position_[joint] = true;
 }
 
 void FaultMonitor::on_comm_fail(int joint) {

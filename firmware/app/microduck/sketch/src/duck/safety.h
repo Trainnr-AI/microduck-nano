@@ -92,6 +92,7 @@ enum class Fault : uint8_t {
   kComm,           // a servo stopped answering
   kFall,           // trunk tilt far from the plan
   kBusWrite,       // a goal write was refused or failed
+  kPositionJump,   // a servo's position changed faster than the servo can move
 };
 
 // "This condition has been true for `seconds`". The first true sample starts the clock and never trips on its own,
@@ -135,6 +136,10 @@ class FaultMonitor {
   int joint_;
   Held overloaded_[kNumJoints];
   uint8_t comm_fails_[kNumJoints];
+  // The last position read from each joint's servo and when, for the position-jump check.
+  int16_t last_position_[kNumJoints];
+  uint32_t last_position_ms_[kNumJoints];
+  bool have_position_[kNumJoints];
   Held tilt_bad_;
 };
 

@@ -92,6 +92,9 @@ struct FaultConfig {
   float over_temp_c, under_voltage_v;
   uint8_t comm_fail_count;
   float fall_pitch_error_deg, fall_roll_deg, fall_s;
+  // A position that moved further between two reads than position_jump_steps_per_s x the time between them, plus
+  // position_jump_margin_steps, is not a movement: the servo's position sensing has failed or left its range.
+  float position_jump_steps_per_s, position_jump_margin_steps;
 };
 
 struct ProtectionConfig {   // servo EEPROM values, written only by a provisioning build
@@ -125,7 +128,8 @@ bool config_ready_for_motion(const RobotConfig& cfg);
 // the servo's step range.
 int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg);
 float step_to_deg(const RobotConfig& cfg, int joint, int16_t step);
-// The servo's own speed report (register 58, assumed steps/s: UNCONFIRMED, bench checklist 8b) as the joint's
+// The servo's own speed report (register 58, steps/s with the direction in bit 15: checked against the change of
+// position on a servo, 2026-11-18) as the joint's
 // speed in degrees per second, in the joint's direction.
 float speed_to_dps(const RobotConfig& cfg, int joint, int16_t speed);
 

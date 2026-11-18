@@ -33,6 +33,57 @@ static int g_gravity_reports = 0, g_gyro_reports = 0, g_other_reports = 0, g_res
 
 static int count_up(int n) { return n < 1000000 ? n + 1 : n; }
 
+// ---- Freeing a stuck bus.
+// When the microcontroller restarts in the middle of a read (every firmware reload does that), the sensor is left
+// holding the data line low, waiting for clock pulses that never come; every transfer then times out after half a
+// second until the sensor loses power. The cure is the standard one: clock the bus by hand until the sensor lets
+// go, then send a STOP. The Qwiic bus is I2C4 on PD12 (clock) and PD13 (data), which the Arduino core does not
+// offer as digital pins, so the two pins are driven through the port's registers for a fraction of a millisecond
+// and then given back to the I2C peripheral exactly as they were.
+struct GpioPort {
+  volatile uint32_t MODER, OTYPER, OSPEEDR, PUPDR, IDR, ODR, BSRR;
+};
+static GpioPort* const kQwiicPort = reinterpret_cast<GpioPort*>(0x42020C00u);  // GPIOD on the STM32U585
+constexpr uint32_t kQwiicScl = 12, kQwiicSda = 13;
+static int g_bus_freed = 0;       // times a held bus was freed
+static int g_bus_last = 0;        // the last attempt: 0 = the lines were free, 1 = freed, 2 = still held
+
+static int free_qwiic_bus() {
+  GpioPort* const g = kQwiicPort;
+  const uint32_t scl = 1u << kQwiicScl, sda = 1u << kQwiicSda;
+  const uint32_t moder = g->MODER, otyper = g->OTYPER;
+  g->BSRR = scl | sda;                // released (high) before they become outputs
+  g->OTYPER = otyper | scl | sda;     // open drain: a line is only ever pulled low, never driven high
+  g->MODER = (moder & ~((3u << (2 * kQwiicScl)) | (3u << (2 * kQwiicSda)))) | (1u << (2 * kQwiicScl)) |
+             (1u << (2 * kQwiicSda));
+  delayMicroseconds(20);
+  int result = 0;
+  if ((g->IDR & (scl | sda)) != (scl | sda)) {
+    result = 2;
+    for (int i = 0; i < 18 && result == 2; ++i) {  // up to two bytes of clock pulses
+      g->BSRR = scl << 16;
+      delayMicroseconds(10);
+      g->BSRR = scl;
+      delayMicroseconds(10);
+      if ((g->IDR & (scl | sda)) == (scl | sda)) result = 1;
+    }
+  }
+  // A STOP, so every device on the bus knows the transfer is over: data rises while the clock is high.
+  g->BSRR = scl << 16;
+  delayMicroseconds(10);
+  g->BSRR = sda << 16;
+  delayMicroseconds(10);
+  g->BSRR = scl;
+  delayMicroseconds(10);
+  g->BSRR = sda;
+  delayMicroseconds(10);
+  g->OTYPER = otyper;
+  g->MODER = moder;
+  g_bus_last = result;
+  if (result == 1 && g_bus_freed < 1000000) ++g_bus_freed;
+  return result;
+}
+
 static int probe(uint8_t address) {
   Wire1.beginTransmission(address);
   return Wire1.endTransmission() == 0 ? 1 : 0;
@@ -54,7 +105,8 @@ static int g_start_attempts = 0;
 
 bool imu_begin() {
   Wire1.begin();  // the Qwiic connector is Wire1 on the UNO Q (3.3 V)
-  Wire1.setClock(100000);  // not 400000: see the top of this file
+  free_qwiic_bus();        // a sensor left mid-read by the restart: see above
+  Wire1.setClock(100000);  // not 400000: see the top of this file. Also restarts the peripheral after the above
   for (int attempt = 0; attempt < 3 && !g_started; ++attempt) {
     ++g_start_attempts;
     if (!g_imu.begin(DUCK_IMU_I2C_ADDRESS, Wire1)) {
@@ -66,6 +118,28 @@ bool imu_begin() {
     g_started = enable_reports();
     g_start_stage = g_started ? 3 : 2;
   }
+  return g_started;
+}
+
+bool imu_retry(uint32_t now_ms) {
+  static uint32_t last_try_ms = 0;
+  if (g_started) return true;
+  if (now_ms - last_try_ms < 2000) return false;
+  last_try_ms = now_ms;
+  if (probe(DUCK_IMU_I2C_ADDRESS) == 0) {
+    // Nothing answers: unplugged (the probe was quick), or the bus is held (it took half a second). Try to free it;
+    // the next try, two seconds on, finds out.
+    free_qwiic_bus();
+    Wire1.setClock(100000);
+    return false;
+  }
+  ++g_start_attempts;
+  if (!g_imu.begin(DUCK_IMU_I2C_ADDRESS, Wire1)) {
+    g_start_stage = 1;
+    return false;
+  }
+  g_started = enable_reports();
+  g_start_stage = g_started ? 3 : 2;
   return g_started;
 }
 
@@ -106,7 +180,8 @@ int imu_poll(float up[3], float gyro_dps[3]) {
 
 ImuDiag imu_diag() {
   return {1, probe(0x4A), probe(0x4B), g_started ? 1 : 0, g_gyro_on ? 1 : 0,
-          g_gravity_reports, g_gyro_reports, g_other_reports, g_resets, g_start_stage, g_start_attempts};
+          g_gravity_reports, g_gyro_reports, g_other_reports, g_resets, g_start_stage, g_start_attempts,
+          g_bus_freed, g_bus_last};
 }
 
 // One read of n bytes; fills h[] with the first four (the SHTP header). False if the read failed.
@@ -160,7 +235,11 @@ void imu_probe(int out[kImuProbeWords]) {
 #else  // no IMU in this build
 
 bool imu_begin() { return false; }
-ImuDiag imu_diag() { return {0, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0}; }
+bool imu_retry(uint32_t now_ms) {
+  (void)now_ms;
+  return false;
+}
+ImuDiag imu_diag() { return {0, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; }
 void imu_probe(int out[kImuProbeWords]) {
   for (int i = 0; i < kImuProbeWords; ++i) out[i] = 0;
 }

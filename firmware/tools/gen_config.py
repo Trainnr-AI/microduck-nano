@@ -201,7 +201,8 @@ def render(r):
     fa = r["faults"]
     w(f"  /* faults */ {{{f(fa['overload_load_pct'])}, {f(fa['overload_seconds'])}, {f(fa['over_temp_c'])}, "
       f"{f(fa['under_voltage_v'])}, {int(fa['comm_fail_count'])}, {f(fa['fall_pitch_error_deg'])}, "
-      f"{f(fa['fall_roll_deg'])}, {f(fa['fall_seconds'])}}},")
+      f"{f(fa['fall_roll_deg'])}, {f(fa['fall_seconds'])}, {f(fa['position_jump_steps_per_s'])}, "
+      f"{f(fa['position_jump_margin_steps'])}}},")
     w(f"  /* command timeout ms */ {int(r['command']['timeout_ms'])}u,")
     pr = r["servo_protection"]
     w(f"  /* servo protection */ {{{int(pr['unload_condition'])}, {int(pr['max_temperature_c'])}, "

@@ -123,14 +123,15 @@ HealthWords rpc_health() {
 // --------------------------------------------- bench reads (no motion)
 
 // [IMU support built, answer at 0x4A, answer at 0x4B, started, gyro on, gravity reports, gyro reports, other
-// reports, resets, start stage, start attempts]: bench checklist step 3 and imu.h. The two address probes are made
+// reports, resets, start stage, start attempts, times the bus was freed, last bus state]: bench checklist step 3
+// and imu.h. The two address probes are made
 // now (-1 without IMU support).
-typedef std::array<int32_t, 11> ImuDiagWords;
+typedef std::array<int32_t, 13> ImuDiagWords;
 ImuDiagWords rpc_imu_diag() {
   note_call();
   const ImuDiag d = imu_diag();
   ImuDiagWords out = {{d.built, d.ack_0x4a, d.ack_0x4b, d.started, d.gyro_on, d.gravity_reports, d.gyro_reports,
-                       d.other_reports, d.resets, d.start_stage, d.start_attempts}};
+                       d.other_reports, d.resets, d.start_stage, d.start_attempts, d.bus_freed, d.bus_last}};
   return out;
 }
 
@@ -275,13 +276,14 @@ int32_t rpc_heartbeat() {
 int32_t rpc_arm(uint32_t key) {
   note_command();
   // A bench servo has torque, or a bench fault is latched: clear it with duck_disarm first.
-  if (!g_bench.idle()) return code(duck::Result::kBusy);
+  if (!g_bench.idle() || !g_bench2.idle()) return code(duck::Result::kBusy);
   return code(g_ctl.arm(key, millis(), g_imu));
 }
 
 int32_t rpc_disarm() {
   note_command();
   g_bench.disarm();
+  g_bench2.disarm();
   g_ctl.disarm();
   return 0;
 }

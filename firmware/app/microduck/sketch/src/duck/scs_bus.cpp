@@ -180,9 +180,19 @@ BusError ScsBus::sync_write_goal(const uint8_t* ids, const uint16_t* positions, 
 BusError ScsBus::write_eeprom(uint8_t id, const EepromChunk* chunks, size_t count, uint8_t lock_id) {
   if (!eeprom_ok_) return BusError::kGated;
   const uint8_t unlock = 0, lock = 1;
+  // A write into the servo's permanent memory keeps it busy for some milliseconds before it answers. With the
+  // normal reply timeout the answer was missed and the lock that followed was lost, leaving the memory unlocked
+  // (seen on an SCS0009, 2026-11-19). So these writes wait longer for their answers.
+  const uint32_t normal_timeout_ms = timeout_ms_;
+  timeout_ms_ = kEepromReplyTimeoutMs;
   BusError e = write(id, reg::kLock, &unlock, 1);
-  for (size_t i = 0; i < count && e == BusError::kOk; ++i) e = write(id, chunks[i].addr, chunks[i].data, chunks[i].n);
+  for (size_t i = 0; i < count && e == BusError::kOk; ++i) {
+    e = write(id, chunks[i].addr, chunks[i].data, chunks[i].n);
+    // A servo that has just been given a new ID may answer that write under the new one.
+    if (lock_id != id && chunks[i].addr == reg::kId && e == BusError::kWrongId) e = BusError::kOk;
+  }
   const BusError e2 = write(lock_id, reg::kLock, &lock, 1);
+  timeout_ms_ = normal_timeout_ms;
   return e != BusError::kOk ? e : e2;
 }
 

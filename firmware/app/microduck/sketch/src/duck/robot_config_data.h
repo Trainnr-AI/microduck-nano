@@ -137,7 +137,7 @@ static const RobotConfig kRobotConfig = {
     {0.0f, 4.425f, 8.85f, 13.275f, 17.7f, 22.125f, 26.55f, 30.975f, 35.4f}, 4.0f, false},
   /* balance */ {-1.5f, 25.0f, 0.2f, 10.0f},
   /* imu */ {{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}, false, 100u, true},
-  /* faults */ {90.0f, 1.0f, 65.0f, 4.3f, 5, 30.0f, 30.0f, 0.1f},
+  /* faults */ {90.0f, 1.0f, 65.0f, 4.3f, 5, 30.0f, 30.0f, 0.1f, 2500.0f, 8.0f},
   /* command timeout ms */ 500u,
   /* servo protection */ {36, 70, 80, 100, 20},
 };

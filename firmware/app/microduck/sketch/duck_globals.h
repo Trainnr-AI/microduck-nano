@@ -11,7 +11,8 @@
 extern const duck::RobotConfig& g_config;  // duck::kRobotConfig (one copy: robot_config_data.h is included once)
 extern duck::ScsBus g_bus;
 extern duck::Controller g_ctl;
-extern duck::BenchServo g_bench;  // one servo on its own; it can only ever be armed in a bench build
+extern duck::BenchServo g_bench;   // one servo on its own; it can only ever be armed in a bench build
+extern duck::BenchServo g_bench2;  // a second one beside it, for a bench with two servos; when either stops, both do
 extern duck::ImuSample g_imu;     // the newest IMU samples
 extern bool g_imu_present;        // the IMU answered at boot
 extern uint32_t g_tick_us_max;    // the longest control tick, in us, since the Linux side last read it

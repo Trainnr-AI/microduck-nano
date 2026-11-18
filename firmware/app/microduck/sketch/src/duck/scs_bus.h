@@ -113,6 +113,7 @@ class ScsBus {
   bool eeprom_ok_ = false;
   bool tx_echo_ = false;
   uint32_t timeout_ms_ = 3;
+  static constexpr uint32_t kEepromReplyTimeoutMs = 60;  // for writes into a servo's permanent memory
 };
 
 }  // namespace duck
