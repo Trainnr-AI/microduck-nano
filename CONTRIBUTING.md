@@ -22,7 +22,9 @@ contributions right now are reviews, measurements from real parts, and fixes to 
   make -C firmware/tests test
   ```
 
-  For the runtime: `cargo test` and `cargo clippy --all-targets` in `runtime/`, with no warnings.
+  For the runtime: `cargo test --workspace` and `cargo clippy --workspace --all-targets` in `runtime/`, with no warnings.
+  After a change to the leg rules (`safety.cpp`, `runtime/limits`) or to `robot.json`: `make -C firmware/tests leg-vectors`
+  and commit the vectors file; it is how the C++ and the Rust are kept deciding alike.
 
   Robot-specific numbers live only in `firmware/config/robot.json`; regenerate the header with
   `python3 firmware/tools/gen_config.py` after editing it. Never weaken a safety default (motion build off, arming

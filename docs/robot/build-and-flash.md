@@ -7,7 +7,7 @@ Getting the firmware onto an Arduino UNO Q, and the wiring it assumes. Paths are
 | Connection | UNO Q | Notes |
 |---|---|---|
 | Servo adapter (Waveshare Bus Servo Adapter (A), jumper on A) | D1 (TX, PB6), D0 (RX, PB7), GND | 3.3 V logic, 1 Mbaud. Waveshare's page says to wire RX to RX and TX to TX: check the silkscreen. Never connect the servo supply to a UNO Q pin |
-| BNO086 | Qwiic connector | 3.3 V only; I2C address 0x4B; this is `Wire1` in a sketch, not `Wire` |
+| BNO086 | Qwiic connector | 3.3 V only; I2C address 0x4B; this is `Wire1` in a sketch, not `Wire`. The firmware runs this bus at 100 kHz: at 400 kHz the sensor's start-up fails without its interrupt line (`imu.cpp`) |
 | Camera | USB-C | See the host-mode note below |
 | Power | VIN | 7 to 24 V per Arduino's power specification; a 3S LiPo is inside that |
 
@@ -18,6 +18,19 @@ From Arduino's documentation, relevant to this build:
 - **USB host mode is not automatic when the board is powered from VIN or 5V** instead of USB-C: the camera will not be
   powered or detected until two pins on the JCTL header are bridged ("Force USB Host Mode on UNO Q" in Arduino's docs).
   JCTL is 1.8 V logic.
+- **`Serial` in a sketch is the Bridge's monitor**, not a UART. A library that prints through `Serial` before
+  `Bridge.begin()` never returns, and the sketch's functions never appear on the Linux side ("method ... not
+  available"). The IMU library does this when it finds the sensor, so the firmware starts the IMU after the Bridge.
+- **The camera, tried on 2026-11-18** (Waveshare OV5640 USB camera, USB ID `1bcf:c001`, on a hub on the UNO Q's
+  USB-C port, the board reached over Wi-Fi): Linux finds it as a standard UVC camera at `/dev/video2` with no driver
+  to install. It offers MJPEG from 320 x 240 to 2592 x 1944 (30 frames a second listed up to 1920 x 1080, 15 at full
+  size) and uncompressed YUYV (30 a second only up to 640 x 480), with autofocus and auto exposure. In a dimly lit
+  room it delivered about 15 frames a second at every size, the listed 30 included; it was not tried in good
+  light. One 1280 x 720 MJPEG frame is about 90 KB. `v4l2-ctl` is on the board; `ffmpeg`, GStreamer's tools and
+  OpenCV for Python are not. **The unit shows no microphone**: its USB description has video interfaces only and no
+  sound card appears, although the design's parts list counts on the camera's microphone. Waveshare's own pages for
+  this model list no microphone either (and no indicator light: nothing on the camera lit while it streamed), so
+  the robot has no microphone as designed.
 - The same UART that drives D1 is the microcontroller's boot console. Whether it prints anything at start-up that a servo
   could read as a command has not been checked (bench checklist, step 4).
 

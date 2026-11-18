@@ -25,20 +25,22 @@ Modelled on Pollen Robotics' Microduck repositories.
 | `hardware/`, `robot/`, `training/` | Not here yet |
 
 Before saying a firmware change is done: `python3 firmware/tools/gen_config.py --check` and `make -C firmware/tests test`.
-Before saying a runtime change is done: `cargo test` and `cargo clippy --all-targets` in `runtime/` (no warnings).
+Before saying a runtime change is done: `cargo test --workspace` and `cargo clippy --workspace --all-targets` in `runtime/` (no warnings).
+The leg rules exist twice, in the firmware's C++ (`safety.cpp`) and in Rust (`runtime/limits`). After changing either, or `robot.json`: `make -C firmware/tests leg-vectors`, commit the vectors file, and the runtime's tests must still pass.
 
 ## How work is done here
 
 - **Sim, training and deployment go through the trainnr MCP server** (`mcp__trainnr__*`) and are checked in trainnr Studio (`launch_studio`, `screenshot_studio`). Do not script around trainnr with ad-hoc MuJoCo or training code.
 - trainnr project: `microduck-nano` (`use_project` at the start of a session; `describe_project` gives the loop state and the next move). Its data lives under `$TRAINNR_HOME/projects/microduck-nano`, outside this repository.
-- The robot is onboarded in that project as `microduck-nano` (16 bodies, 15 joints, 14 position actuators; the mouth servo is not actuated in the model). Editing the model means onboarding again, which changes its stamp.
+- The robot is onboarded in that project from the design's `sim/scene_scs0009_v2.xml` (16 bodies, 15 joints, 14 position actuators; the mouth servo is not actuated in the model). Editing the model means onboarding again, which changes its stamp, and trainnr wants a new name each time ([trainnr#119](https://github.com/Trainnr-AI/trainnr/issues/119)): the name and stamp on each machine are in the handoff. Older entries in the project are earlier revisions.
 - trainnr's library also carries `microduck` (Pollen's original, XL330 servos) as a reference.
 
 ## Where the robot comes from
 
 The design source is the separate `agent-cad3d` repository (`Trainnr-AI/agent-cad3d`, usually checked out beside this one), project `projects/xgoduck_scs0009/`: XGO-Duck redesigned for 15 Feetech SCS0009 servos at uniform 0.92x scale, head shell 0.85x, Arduino UNO Q. Read its `docs/HANDOFF.md` and `projects/xgoduck_scs0009/REVIEW.md` before touching the design; decisions and open items live there.
 
-- Simulation model: `projects/xgoduck_scs0009/sim/scene_scs0009_v1.xml` (includes `robot_scs0009_v1.xml`, meshes in `sim/assets_v1/`). Its masses and inertias still come from the scaled original, not the new parts.
+- Simulation model: `projects/xgoduck_scs0009/sim/scene_scs0009_v2.xml` (includes `robot_scs0009_v2.xml`, meshes in `sim/assets/`).
+- Limits: `sim/joint_ranges_v2.json` (servo limits and the rules over several joints) and `data/hip_collision_map.json` (every measured pose). `firmware/tools/import_design.py` brings them into `firmware/config/robot.json` and checks the written rules against the pose data. The design was closed for the first build on 2026-11-18.
 - CAD is edited there (Blender over MCP), not here. This repository receives finished, checked outputs.
 - No SCS0009 actuator model exists yet: it must be identified from real telemetry (`identify_system`) before a trained policy means anything.
 
