@@ -279,7 +279,7 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   poll_servos(now_ms, cfg_.servo.reads_per_tick);
 
   // Linux side silent: stop following its targets, hold what we have.
-  if (now_ms - last_cmd_ms_ > cfg_.cmd_timeout_ms) {
+  if (elapsed_over(now_ms, last_cmd_ms_, cfg_.cmd_timeout_ms)) {
     flags |= kStatCmdTimeout;
     if (!timed_out_) {
       // Freeze at the setpoints of this moment (ankles without the balance

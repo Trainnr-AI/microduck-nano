@@ -8,8 +8,19 @@
 // older than its core 0.52.0). These are accurate to better than 0.01 degree,
 // which is far below a servo step (0.29 degree).
 #pragma once
+#include <stdint.h>
 
 namespace duck {
+
+// Has more than `limit_ms` passed since `since_ms`, on a millisecond clock that wraps? A `since_ms` that is a
+// little AFTER `now_ms` counts as "no time has passed": a command is stamped when it arrives, which can be a
+// millisecond after the control tick took its own time. Read as unsigned, that one millisecond is 49 days, and
+// the bench servo was dropped for "silence" in the middle of a run (seen 2026-11-19).
+inline bool elapsed_over(uint32_t now_ms, uint32_t since_ms, uint32_t limit_ms) {
+  const int32_t elapsed = static_cast<int32_t>(now_ms - since_ms);
+  return elapsed > 0 && static_cast<uint32_t>(elapsed) > limit_ms;
+}
+
 
 constexpr float kPi = 3.14159265358979f;
 

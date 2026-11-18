@@ -5,7 +5,9 @@
 //   2. per-joint clamp to the servo angle limits (beak 0..+35 included),
 //   3. rate limit (max_speed_dps per joint),
 //   4. head roll x head yaw interlock,
-//   5. hip map per leg (hip pitch x roll x yaw x knee), stricter neighbour.
+//   5. each leg's own hip map (hip pitch x roll x yaw x knee x ankle), stricter neighbour, and the knee x ankle rule,
+//   6. the both-legs rule.
+// 5 and 6 are skipped on the checked sit / stand path.
 // FaultMonitor watches servo feedback and trunk tilt and latches a fault.
 #pragma once
 #include <stdint.h>
@@ -20,8 +22,10 @@ enum SafetyFlag : uint16_t {
   kFlagJointClamp = 1 << 1,
   kFlagRateLimit = 1 << 2,
   kFlagHeadInterlock = 1 << 3,
-  kFlagHipMapLeft = 1 << 4,
-  kFlagHipMapRight = 1 << 5,
+  kFlagLegLeft = 1 << 4,    // a rule of the left leg (hip map or knee x ankle) held joints of that leg
+  kFlagLegRight = 1 << 5,
+  kFlagKneeAnkle = 1 << 6,  // ...and the knee x ankle rule was one of the reasons
+  kFlagBothLegs = 1 << 7,   // the both-legs rule held both legs
 };
 
 // Steps 2 and 3 for one joint, each setting its flag in *flags when it changes something. They are separate so the
@@ -33,11 +37,26 @@ inline float limit_joint(const JointConfig& j, float setpoint, float target, flo
   return rate_limit(j, setpoint, clamp_joint(j, target, flags), dt_s, flags);
 }
 
-// Is this left-leg pose inside the measured collision-free set? Between grid
-// values every surrounding grid point must be free ("stricter neighbour").
-bool hip_pose_allowed(const HipMapConfig& map, float pitch, float roll, float yaw, float knee);
-// Same for one leg of a full joint vector; the right leg is mirrored.
-bool leg_allowed(const HipMapConfig& map, const float q[kNumJoints], bool right);
+// One leg's joints in the LEFT leg's signs, which every leg rule is written in.
+struct LegPose { float yaw, roll, pitch, knee, ankle; };
+LegPose leg_pose(const float q[kNumJoints], bool right);
+
+// Is this hip pose (left signs) inside that leg's measured collision-free set? Between grid values every
+// surrounding grid point must be free ("stricter neighbour"); beyond an axis's end the end value is used.
+bool hip_pose_allowed(const HipMapConfig& map, bool right, float pitch, float roll, float yaw, float knee,
+                      float ankle);
+// Knee x ankle (left signs): with the knee bent past the threshold the ankle must not drop below the row's value.
+bool knee_ankle_allowed(const KneeAnkleConfig& c, float knee, float ankle);
+// Both of the above for one leg of a full joint vector.
+bool leg_allowed(const RobotConfig& cfg, const float q[kNumJoints], bool right);
+// Both legs together: not both forward while both hips are toed out.
+bool both_legs_allowed(const BothLegsConfig& c, const float q[kNumJoints]);
+// Rules 5 and 6 on a full joint vector: turns `next` into an allowed pose, given the allowed pose `prev` the robot
+// is in. Each leg keeps as much of its move as its own rules allow (all of it; else with the ankle held; else the
+// ankle alone; else it stays); if the two legs together then break the both-legs rule, both stay. Returns the
+// kFlagLeg* / kFlagKneeAnkle / kFlagBothLegs bits. The Rust runtime has the same function (runtime/limits) and
+// the two are compared on shared vectors (tests: --leg-vectors).
+uint16_t settle_legs(const RobotConfig& cfg, const float prev[kNumJoints], float next[kNumJoints]);
 
 // Head interlock. Allowed states: abs(yaw) <= window and abs(roll) <= roll max,
 // or abs(roll) <= roll_free at any yaw; window and roll max are reduced by
@@ -54,7 +73,7 @@ class SafetyFilter {
 
   // checked_path = true only for the sit/stand trajectory and the SIT hold:
   // that path was checked on the exact parts on its own and lies outside the
-  // general hip map, so the hip map is skipped for it.
+  // general hip map, so the leg rules (hip maps, knee x ankle, both legs) are skipped for it.
   uint16_t step(const float target[kNumJoints], float dt_s, bool checked_path, float out[kNumJoints]);
 
   const float* setpoint() const { return q_; }
@@ -73,6 +92,7 @@ enum class Fault : uint8_t {
   kComm,           // a servo stopped answering
   kFall,           // trunk tilt far from the plan
   kBusWrite,       // a goal write was refused or failed
+  kPositionJump,   // a servo's position changed faster than the servo can move
 };
 
 // "This condition has been true for `seconds`". The first true sample starts the clock and never trips on its own,
@@ -116,6 +136,10 @@ class FaultMonitor {
   int joint_;
   Held overloaded_[kNumJoints];
   uint8_t comm_fails_[kNumJoints];
+  // The last position read from each joint's servo and when, for the position-jump check.
+  int16_t last_position_[kNumJoints];
+  uint32_t last_position_ms_[kNumJoints];
+  bool have_position_[kNumJoints];
   Held tilt_bad_;
 };
 

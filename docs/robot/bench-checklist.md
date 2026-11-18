@@ -12,8 +12,13 @@ are powered.
 2. If you can, update the board (Wi-Fi, `arduino-app-cli system update`), flash again, and confirm `duck_info` now
    reports `servo_uart_is_serial1: 1`.
 3. With the IMU on Qwiic: set `DUCK_IMU_BNO08X 1`, add `- SparkFun BNO08x Cortex Based IMU (1.0.6)` to `sketch.yaml`
-   (needs a network on the board), flash. `duck_info` should report the IMU present. Tilt the IMU by hand and note which
-   sensor axis reads "up"; write the `sensor_to_body` matrix in `robot.json` so that a level robot gives pitch 0 / roll 0,
+   (needs a network on the board), flash. `duck_info` should report the IMU present (done on the test board,
+   2026-11-18: present, 100 reports a second). If it does not, `duck_imu_diag` says whether the sensor answers at
+   0x4B or 0x4A and where its start stopped, and `duck_imu_probe` lists what it sends after a reset. Tilt the IMU by
+   hand and read `duck_imu_raw`, or watch it with `python3 imu_watch.py` on the board (`tools/imu_watch.py`: up, turning
+   rate and angle turned about each axis, 250 readings a second), to see which sensor axis reads "up" (lying flat,
+   component side up: +z; x along the breakout's long side, y along its short side; gyro right-handed about all
+   three, checked by hand on 2026-11-18); write the `sensor_to_body` matrix in `robot.json` so that a level robot gives pitch 0 / roll 0,
    nose up gives positive pitch and left side up gives positive roll; set `imu.calibrated` true. Confirm in `duck_status`.
    The matrix must be a rotation (`gen_config.py` refuses a mirror). Then the gyro, from `duck_state`'s last three
    words (degrees per second x10, body frame): turning the robot to its left reads positive z, nose down positive y,
@@ -24,11 +29,16 @@ are powered.
 **B. One servo on the bench, nothing attached to its horn, default build (cannot move it)**
 
 5. Power the adapter and one servo from a current-limited 5 V supply. Does the adapter work at 5 V at all?
+   (Yes, on four AA cells at 5.2 to 5.3 V, 2026-11-18 and 19: through its USB port with the jumper on **B**, and
+   through the UART header to D0 / D1 with the jumper on **A**. The jumper is the small cap on three pins beside the
+   letters A and B; in the wrong position the other port is disconnected and nothing comes back at all, which cost a
+   day here. If the servo is silent: `duck_bus_raw` shows every byte that arrives, and a wire from D0 to D1 shows
+   whether the board's own port works.)
 6. `duck_scan` finds the servo (factory ID is usually 1). If every read fails, try `duck_set_echo(true)`.
 7. `duck_read(id, 56, 2)` while turning the horn by hand to two known angles 90 deg apart: confirm 3.41 steps per degree
    and which way the numbers go.
 8. Read registers 9..12 (angle limits), 13, 19, 37, 38, 39 and compare with the factory values in the register tables in [the firmware design](../design/firmware.md)
-   (20 / 1003, 70, -, 20, 200, 80). This is the check of the unconfirmed addresses.
+   (20 / 1003, 70, 32, 20, 100, 80 as read on 2026-11-18). This is the check of the unconfirmed addresses.
    To watch or record the servo through the runtime, give one joint its ID in `config/robot.json` (for example
    `left_knee`), regenerate the header and flash: disarmed, the firmware reads it every 100 ms, and
    `duckd run --robot robot.json --record bench.mcap` records it for trainnr. It cannot be moved this way: arming
@@ -50,7 +60,9 @@ are powered.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 
-9. Decide the 15 servo IDs; set each servo's ID with only that servo on the bus; label it.
+9. Decide the 15 servo IDs; set each servo's ID with only that servo on the bus; label it. (`duck_set_id(key, old, new)`
+   in the provisioning build; done for one servo, 1 to 2, on 2026-11-19. Read register 5 and 48 back afterwards: the
+   new ID, and 1 for a locked memory.)
 10. Set every servo to mid-range before fitting its horn (ASSEMBLY.md step 0.3), then fill in `zero_step`, `direction`,
     `calibrated` in `robot.json` from readings at the joint's zero pose.
 11. Write and read back the angle limits and the protection settings on every servo (JOINT_LIMITS.md sections 1 and 3).
@@ -59,9 +71,9 @@ are powered.
 
 **D. First motion (motion build: `DUCK_ENABLE_MOTION 1`), robot held in a stand or by a second person, feet off the floor**
 
-13. **Not before** the firmware has the design's new limits (handoff, "What to do next" 3): the right leg's own
-   hip map, the both-legs rule, the knee x ankle interlock and the ankle-dependent hip cells. Today's firmware
-   mirrors the left leg's map and has none of the others. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
+13. The firmware holds the closed design's limits (2026-11-18): each leg's own hip map with the ankle, the knee x
+   ankle rule and the both-legs rule ([firmware.md](../design/firmware.md) lists what is still not measured). If the
+   design repository has changed since, run `tools/import_design.py` again first. One leg unplugged from the others if possible. Arm. Nothing should move. Disarm; torque goes.
     With every servo fitted and armed, read `worst firmware tick` in `duck_status` (`duckd status`): armed, the firmware
     reads `servo.reads_per_tick` servos (8) every 10 ms tick, and Linux's calls wait while it does. It should stay
     well under 10 ms; compare `duckd time` armed and disarmed. If it does not, lower `reads_per_tick` (6 still reads

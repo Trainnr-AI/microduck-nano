@@ -36,6 +36,7 @@ const duck::RobotConfig& g_config = duck::kRobotConfig;
 duck::ScsBus g_bus(g_uart);
 duck::Controller g_ctl(g_config, g_bus, DUCK_ENABLE_MOTION != 0);
 duck::BenchServo g_bench(g_config, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
+duck::BenchServo g_bench2(g_config, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
 duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0, {0.0f, 0.0f, 0.0f}, false, 0};
 bool g_imu_present = false;
 uint32_t g_tick_us_max = 0;
@@ -44,15 +45,24 @@ void setup() {
   status_display_begin();
 
   DUCK_SERVO_SERIAL.begin(g_config.servo.baud);
-  g_imu_present = imu_begin();
 
   Bridge.begin(DUCK_BRIDGE_BAUD);
   rpc_register();
+  // The IMU starts after the Bridge. The IMU library prints through `Serial` when it finds the sensor, and on this
+  // board `Serial` is the Bridge's monitor: printed before Bridge.begin(), the call never returned and the firmware's
+  // functions never appeared on the Linux side (seen on 2026-11-18, the first start with a BNO086 attached).
+  g_imu_present = imu_begin();
   g_next_tick_ms = millis();
 }
 
 void loop() {
   const uint32_t now = millis();
+
+  // An IMU that was unplugged or not ready when the board started is picked up later, but only while nothing is
+  // armed: starting it blocks for about half a second.
+  if (!g_imu_present && g_ctl.status().mode == duck::Mode::kDisarmed && !g_bench.armed() && !g_bench2.armed()) {
+    g_imu_present = imu_retry(now);
+  }
 
   // imu_poll() leaves a vector that is not fresh untouched.
   const int fresh = imu_poll(g_imu.up, g_imu.gyro_dps);
@@ -70,7 +80,12 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_tick_ms) > 5 * DUCK_TICK_MS) g_next_tick_ms = now + DUCK_TICK_MS;
     const uint32_t t0 = micros();
     g_ctl.tick(now, g_imu);
-    g_bench.tick(now, g_ctl.status().mode == duck::Mode::kArmed);
+    // Two bench servos share the bus. A stop of either switches every servo off and closes the bus's motion gate,
+    // so the other one's next goal write is refused and it stops too: any stop stops both. While one is armed the
+    // other must not repeat its own "torque off", so each is told when the bus is in use by the other.
+    const bool robot_armed = g_ctl.status().mode == duck::Mode::kArmed;
+    g_bench.tick(now, robot_armed || g_bench2.armed());
+    g_bench2.tick(now, robot_armed || g_bench.armed());
     status_display_update(now);  // counted in the worst tick: the display must not cost the control loop
     const uint32_t dt = micros() - t0;
     if (dt > g_tick_us_max) g_tick_us_max = dt;

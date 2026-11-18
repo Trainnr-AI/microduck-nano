@@ -1,30 +1,32 @@
 # Roadmap
 
-Status on 2026-11-15. Ordered by what blocks what, not by date.
+Status on 2026-11-18. Ordered by what blocks what, not by date.
 
 ## Works today
 
-- **Firmware on a bare Arduino UNO Q.** Builds, passes 21 host tests, runs on the board on both the shipped and the
+- **Firmware on a bare Arduino UNO Q.** Builds, passes 26 host tests, runs on the board on both the shipped and the
   updated board software. The Linux side and the microcontroller talk; arming is refused. No servo has been driven.
 - **Runtime in Rust on rigrs** ([`runtime/`](../../runtime/)). Reads the firmware's state through the board's router
   and runs a dry-run control loop with rigrs guards. Measured on the board: a tick's exchange with the microcontroller took 18 ms
   as two reads at the default link speed and takes about 6 ms as one exchange at 460800 baud.
 - **Policy runner** in the runtime: manifest-checked ONNX policies, tested with a hand-made network. No trained
   policy exists.
-- **Simulation model.** The design's MuJoCo model (`scene_scs0009_v2.xml`) is onboarded in trainnr as
-  `microduck-nano-v2`. It stands, crouches, and sits and stands in simulation.
+- **Simulation model.** The design's MuJoCo model (`scene_scs0009_v2.xml`) is onboarded in trainnr (the closed design of
+  2026-11-18 as `microduck-nano-2026-11-18`). It stands, crouches, and sits and stands in simulation.
 - **Measurements of the board.** [uno-q-compute.md](uno-q-compute.md).
 
 ## Designed, not built
 
-- **The robot.** CAD exists in the design repository; nothing is printed. The
-  [design review](design-review-2026-11-14.md) lists what must change first.
+- **The robot.** CAD exists in the design repository, closed for a first build on 2026-11-18; nothing is printed.
+  The design's answers to the [design review](design-review-2026-11-14.md) have not been reviewed again.
 - **Bench bring-up.** [The checklist](../robot/bench-checklist.md) is written; no step has been run.
 
 ## Next, in order
 
-1. **Fix what the review found** (deferred on 2026-11-15: the 3D design is left for later), in the design repository: the head interlock collision, the right-leg hip map,
-   battery clearances and protection, regulator placement. Then re-run the review.
+1. ~~Fix what the review found~~ Done in the design repository and closed on 2026-11-18; the firmware holds the
+   new limits and leg rules (2026-11-18). Open: an independent look at the closed design (battery without protection
+   electronics, the regulator's window), and the poses the design did not measure
+   ([firmware.md](../design/firmware.md)).
 2. **One servo on the bench.** Confirm steps per degree, the protection registers and the adapter at 5 V; record
    telemetry (`duckd run --record`) and fit an actuator model for the SCS0009. Nothing trained before this is
    trustworthy. A bench build (`DUCK_BENCH_MOTION 1`, off by default) and `duckd bench`

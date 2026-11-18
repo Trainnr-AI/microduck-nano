@@ -3,8 +3,17 @@
 How a walking policy gets from simulation to the robot, through trainnr (used through its MCP tools only) and this
 repository's runtime. Status on 2026-11-15.
 
-trainnr project: `microduck-nano` (under trainnr's data folder, not in this repository). The robot is onboarded as
-`microduck-nano-v2@a415da90611d`, from the design repository's `sim/scene_scs0009_v2.xml`.
+trainnr project: `microduck-nano` (under trainnr's data folder, not in this repository). The robot is onboarded from
+the design repository's `sim/scene_scs0009_v2.xml`: as `microduck-nano-v2@a415da90611d` on the machine the pipeline
+check ran on, and as `microduck-nano-2026-11-18@e936681498c1` (the design as closed on 2026-11-18, with its final
+joint ranges) on the other. trainnr wants a new name for each revision
+([trainnr#119](https://github.com/Trainnr-AI/trainnr/issues/119)).
+
+**trainnr knows one range per joint and nothing else.** The firmware also enforces limits over several joints (each
+leg's hip map, knee x ankle, both legs, head roll x yaw; [firmware.md](firmware.md)). A policy trained in trainnr is
+free to use poses the firmware will refuse, and evaluation, the gate and pre-flight cannot see it
+([trainnr#121](https://github.com/Trainnr-AI/trainnr/issues/121)). Until that is fixed, a walk trained there has to
+be checked against the firmware's rules before it goes on the robot.
 
 | Stage | trainnr tool | Here | Status |
 |---|---|---|---|

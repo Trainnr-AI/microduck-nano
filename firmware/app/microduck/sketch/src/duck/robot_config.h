@@ -45,10 +45,26 @@ struct HeadInterlockConfig {
   float roll_free_deg;
 };
 
-constexpr int kHipPitchN = 13, kHipRollN = 8, kHipYawN = 3, kHipKneeN = 4;
-struct HipMapConfig {       // left-leg signs; the right leg is the mirror image
-  float pitch[kHipPitchN], roll[kHipRollN], yaw[kHipYawN], knee[kHipKneeN];
-  uint8_t collides[kHipPitchN][kHipYawN][kHipKneeN];  // bit i set = collides at roll[i]
+// The leg rules below are all written in the LEFT leg's signs (hip pitch + = leg back, roll + = out, yaw + = toe
+// out, knee and ankle as the left's). A right leg's angles have their signs flipped before a rule is applied.
+constexpr int kHipPitchN = 13, kHipRollN = 8, kHipYawN = 3, kHipKneeN = 4, kHipAnkleN = 3;
+struct HipMapConfig {       // one map per leg: the right leg is not a mirror of the left
+  float pitch[kHipPitchN], roll[kHipRollN], yaw[kHipYawN], knee[kHipKneeN], ankle[kHipAnkleN];
+  // [0 = left, 1 = right][ankle][pitch][yaw][knee]; bit i set = not allowed at roll[i]
+  uint8_t collides[2][kHipAnkleN][kHipPitchN][kHipYawN][kHipKneeN];
+};
+
+constexpr int kKneeAnkleN = 7;
+struct KneeAnkleConfig {    // with the knee past knee_over_deg, ankle >= ankle_min of the first row at or above the knee
+  float knee_over_deg;
+  float knee[kKneeAnkleN], ankle_min[kKneeAnkleN];
+};
+
+struct BothLegsConfig {     // both hips toed out past yaw_out_over_deg, and both legs forward of ...
+  float yaw_out_over_deg;
+  float pitch_forward_of_deg;        // ... this: never
+  float band_pitch_forward_of_deg;   // ... this: not with a hip rolled in past band_roll_in_past_deg
+  float band_roll_in_past_deg;
 };
 
 constexpr int kPlannedPitchN = 9;
@@ -76,6 +92,9 @@ struct FaultConfig {
   float over_temp_c, under_voltage_v;
   uint8_t comm_fail_count;
   float fall_pitch_error_deg, fall_roll_deg, fall_s;
+  // A position that moved further between two reads than position_jump_steps_per_s x the time between them, plus
+  // position_jump_margin_steps, is not a movement: the servo's position sensing has failed or left its range.
+  float position_jump_steps_per_s, position_jump_margin_steps;
 };
 
 struct ProtectionConfig {   // servo EEPROM values, written only by a provisioning build
@@ -89,6 +108,8 @@ struct RobotConfig {
   float sit[kNumPoseJoints];
   HeadInterlockConfig head;
   HipMapConfig hip;
+  KneeAnkleConfig knee_ankle;
+  BothLegsConfig both_legs;
   MotionConfig motion;
   BalanceConfig balance;
   ImuConfig imu;
@@ -107,7 +128,8 @@ bool config_ready_for_motion(const RobotConfig& cfg);
 // the servo's step range.
 int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg);
 float step_to_deg(const RobotConfig& cfg, int joint, int16_t step);
-// The servo's own speed report (register 58, assumed steps/s: UNCONFIRMED, bench checklist 8b) as the joint's
+// The servo's own speed report (register 58, steps/s with the direction in bit 15: checked against the change of
+// position on a servo, 2026-11-18) as the joint's
 // speed in degrees per second, in the joint's direction.
 float speed_to_dps(const RobotConfig& cfg, int joint, int16_t speed);
 

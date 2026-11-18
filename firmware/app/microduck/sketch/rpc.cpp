@@ -12,6 +12,7 @@
 #error "duck_build_config.h must be included before its switches are tested"
 #endif
 #include "duck_globals.h"
+#include "imu.h"
 #include "rpc_util.h"
 #include "status_display.h"
 #include "uart_transport.h"
@@ -121,6 +122,82 @@ HealthWords rpc_health() {
 
 // --------------------------------------------- bench reads (no motion)
 
+// [IMU support built, answer at 0x4A, answer at 0x4B, started, gyro on, gravity reports, gyro reports, other
+// reports, resets, start stage, start attempts, times the bus was freed, last bus state]: bench checklist step 3
+// and imu.h. The two address probes are made
+// now (-1 without IMU support).
+typedef std::array<int32_t, 13> ImuDiagWords;
+ImuDiagWords rpc_imu_diag() {
+  note_call();
+  const ImuDiag d = imu_diag();
+  ImuDiagWords out = {{d.built, d.ack_0x4a, d.ack_0x4b, d.started, d.gyro_on, d.gravity_reports, d.gyro_reports,
+                       d.other_reports, d.resets, d.start_stage, d.start_attempts, d.bus_freed, d.bus_last}};
+  return out;
+}
+
+// The IMU as the sensor reports it, before the mounting matrix (bench checklist step 3: finding that matrix):
+// [age of the gravity sample in ms, up x1000 (x, y, z), age of the gyro sample in ms, gyro deg/s x10 (x, y, z)].
+// "up" is the unit vector away from gravity in the sensor's own axes. An age of -1 = never received.
+typedef std::array<int32_t, 8> ImuRawWords;
+ImuRawWords rpc_imu_raw() {
+  note_call();
+  const uint32_t now = millis();
+  ImuRawWords out;
+  out[0] = g_imu.valid ? static_cast<int32_t>(now - g_imu.t_ms) : -1;
+  for (int i = 0; i < 3; ++i) out[1 + i] = static_cast<int32_t>(duck::round_to_long(g_imu.up[i] * 1000.0f));
+  out[4] = g_imu.gyro_valid ? static_cast<int32_t>(now - g_imu.gyro_t_ms) : -1;
+  for (int i = 0; i < 3; ++i) out[5 + i] = tenths(g_imu.gyro_dps[i]);
+  return out;
+}
+
+// [reset write accepted, reads made, ms, (length word, channel) per read]: imu.h, imu_probe(). Bench only; refused (all -1)
+// while a control loop is armed, because it blocks for about 0.4 s.
+typedef std::array<int32_t, kImuProbeWords> ImuProbeWords;
+ImuProbeWords rpc_imu_probe() {
+  note_call();
+  ImuProbeWords out;
+  if (rpc::bus_owned()) {
+    out.fill(-1);
+    return out;
+  }
+  int words[kImuProbeWords];
+  imu_probe(words);
+  for (int i = 0; i < kImuProbeWords; ++i) out[i] = words[i];
+  return out;
+}
+
+// [bytes received, then up to 24 of them]: sends a PING to `id` and returns whatever arrives on the servo port in
+// the next 20 ms, unparsed. Nothing = the receive wire, the adapter's power or its jumper; the six bytes sent
+// (255 255 id 2 1 checksum) alone = the adapter echoes and the servo is silent; those plus six more = a reply behind
+// an echo (duck_set_echo(true)). Refused (-1) while a control loop is armed.
+typedef std::array<int32_t, 25> BusRawWords;
+BusRawWords rpc_bus_raw(int32_t id) {
+  note_call();
+  BusRawWords out;
+  out.fill(0);
+  if (rpc::bus_owned() || !rpc::valid_id(id)) {
+    out[0] = -1;
+    return out;
+  }
+  uint8_t rx[24];
+  const size_t n = g_bus.raw_ping(static_cast<uint8_t>(id), rx, sizeof(rx), 20);
+  out[0] = static_cast<int32_t>(n);
+  for (size_t i = 0; i < n; ++i) out[1 + i] = rx[i];
+  return out;
+}
+
+// Bench only: reopen the servo port at another speed, to look for a servo that is not at the configured one
+// (a servo's speed is a setting in its own memory). Returns the speed now in use; 0 or less asks for the configured
+// speed again. Refused (-1) while a control loop is armed. Not kept across a restart.
+int32_t rpc_bus_baud(int32_t baud) {
+  note_call();
+  if (rpc::bus_owned()) return -1;
+  const uint32_t speed = baud > 0 ? static_cast<uint32_t>(baud) : g_config.servo.baud;
+  DUCK_SERVO_SERIAL.end();
+  DUCK_SERVO_SERIAL.begin(speed);
+  return static_cast<int32_t>(speed);
+}
+
 // 0 = the servo answered; otherwise a BusError code (1 = no reply).
 int32_t rpc_ping(int32_t id) {
   note_call();
@@ -199,13 +276,14 @@ int32_t rpc_heartbeat() {
 int32_t rpc_arm(uint32_t key) {
   note_command();
   // A bench servo has torque, or a bench fault is latched: clear it with duck_disarm first.
-  if (!g_bench.idle()) return code(duck::Result::kBusy);
+  if (!g_bench.idle() || !g_bench2.idle()) return code(duck::Result::kBusy);
   return code(g_ctl.arm(key, millis(), g_imu));
 }
 
 int32_t rpc_disarm() {
   note_command();
   g_bench.disarm();
+  g_bench2.disarm();
   g_ctl.disarm();
   return 0;
 }
@@ -256,6 +334,11 @@ void rpc_register() {
   Bridge.provide_safe("duck_state", rpc_state);
   Bridge.provide_safe("duck_setpoints", rpc_setpoints);
   Bridge.provide_safe("duck_health", rpc_health);
+  Bridge.provide_safe("duck_imu_diag", rpc_imu_diag);
+  Bridge.provide_safe("duck_imu_raw", rpc_imu_raw);
+  Bridge.provide_safe("duck_imu_probe", rpc_imu_probe);
+  Bridge.provide_safe("duck_bus_raw", rpc_bus_raw);
+  Bridge.provide_safe("duck_bus_baud", rpc_bus_baud);
   Bridge.provide_safe("duck_ping", rpc_ping);
   Bridge.provide_safe("duck_scan", rpc_scan);
   Bridge.provide_safe("duck_read", rpc_read);

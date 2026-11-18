@@ -1,0 +1,11 @@
+[package]
+name = "duck-limits"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Limits over several joints for Microduck Nano: each leg's hip map, knee x ankle, both legs. no_std, no allocation; written to move into rigrs"
+repository = "https://github.com/Trainnr-AI/microduck-nano"
+publish = false
+
+[lints]
+workspace = true

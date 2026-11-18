@@ -24,9 +24,9 @@ const MODES: [&str; 3] = ["DISARMED", "ARMED", "FAULT"];
 const BENCH_MODES: [&str; 3] = ["OFF", "ARMED", "FAULT"];
 const POSTURES: [&str; 6] =
     ["UNKNOWN", "STANDING", "SITTING", "MOVING_TO_SIT", "MOVING_TO_STAND", "RETURNING_TO_STAND"];
-const FAULTS: [&str; 8] = [
+const FAULTS: [&str; 9] = [
     "none", "overload", "over-temperature", "under-voltage", "servo status", "servo not answering", "fall",
-    "bus write",
+    "bus write", "position jump",
 ];
 /// Result codes of a command, as the firmware reports them (`duck::Result`).
 const RESULTS: [&str; 14] = [

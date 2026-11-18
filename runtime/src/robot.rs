@@ -12,6 +12,8 @@ use std::path::Path;
 use arm::{collect_joints, ArmSpec, JointSpec};
 use serde::Deserialize;
 
+use crate::limits::{BothLegsFile, HipMapFile, KneeAnkleFile, LegLimits, LimitsError};
+
 /// Joint order used by the firmware on the wire.
 pub const JOINT_NAMES: [&str; 15] = [
     "left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle",
@@ -40,6 +42,9 @@ struct JointEntry {
 #[derive(Debug, Deserialize)]
 struct RobotFile {
     joints: Vec<JointEntry>,
+    hip_map: HipMapFile,
+    knee_ankle: KneeAnkleFile,
+    both_legs: BothLegsFile,
 }
 
 #[derive(Debug)]
@@ -50,6 +55,8 @@ pub enum RobotError {
     JointOrder { index: usize, expected: &'static str, found: String },
     JointCount(usize),
     Limits { joint: &'static str },
+    /// The limits over several joints (hip maps, knee x ankle, both legs) are not usable.
+    LegLimits(LimitsError),
 }
 
 impl fmt::Display for RobotError {
@@ -62,6 +69,7 @@ impl fmt::Display for RobotError {
             }
             RobotError::JointCount(n) => write!(f, "the robot file has {n} joints, expected {}", JOINT_NAMES.len()),
             RobotError::Limits { joint } => write!(f, "joint `{joint}` has limits or a speed that are not usable"),
+            RobotError::LegLimits(e) => write!(f, "{e}"),
         }
     }
 }
@@ -81,6 +89,8 @@ pub struct Robot {
     pub chains: Vec<Chain>,
     /// How many joints have a servo ID assigned in the file.
     pub ids_assigned: usize,
+    /// The limits over several joints: each leg's hip map, knee x ankle, both legs.
+    pub leg_limits: LegLimits,
 }
 
 impl Robot {
@@ -123,7 +133,9 @@ impl Robot {
             let joints = collect_joints(joints.iter().cloned()).ok_or(RobotError::JointCount(count))?;
             chains.push(Chain { name, first, spec: ArmSpec { joints } });
         }
-        Ok(Robot { chains, ids_assigned })
+        let leg_limits =
+            LegLimits::from_file(file.hip_map, file.knee_ankle, file.both_legs).map_err(RobotError::LegLimits)?;
+        Ok(Robot { chains, ids_assigned, leg_limits })
     }
 
     pub fn joints(&self) -> usize {

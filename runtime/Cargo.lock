@@ -298,11 +298,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
+name = "duck-limits"
+version = "0.1.0"
+
+[[package]]
 name = "duck-runtime"
 version = "0.1.0"
 dependencies = [
  "arm",
  "ctrlc",
+ "duck-limits",
  "mcap",
  "rmpv",
  "serde",
