@@ -22,6 +22,7 @@ the Linux side.
 | `tools/import_design.py` | Refreshes the design-derived numbers in `robot.json` from the design repository |
 | `tools/set-link-speed.sh` | Changes the speed of the link between the board's two processors (run on the board with sudo) |
 | `tools/router_call.py` | Calls a firmware function from a shell on the board (debugging) |
+| `tools/imu_watch.py` | Run on the board: watches the IMU's raw readings while it is moved by hand (up, turning rate, angle turned about each axis) |
 | `app/microduck/` | The Arduino App Lab app that goes on the board |
 | `app/microduck/sketch/` | Microcontroller side: `sketch.ino` (shared state, setup, control loop), `rpc.cpp` (Bridge functions; `rpc_bench.cpp` and `rpc_provision.cpp` for the bench and provisioning builds), `status_display.cpp` (LEDs), `uart_transport.h` (servo UART), `imu.cpp` (BNO086), `duck_build_config.h` (build switches) |
 | `app/microduck/sketch/src/duck/` | Portable core, no Arduino dependency: SCS protocol and bus driver, joint table, safety layer, sit / stand, balance, state machine |
@@ -42,10 +43,10 @@ the Linux side.
 make -C firmware/tests test        # needs g++ and make
 ```
 
-21 tests of the portable core against simulated servos (`tests/fake_servos.h`): packet bytes and parsing, the write
+26 tests of the portable core against simulated servos (`tests/fake_servos.h`): packet bytes and parsing, the write
 gates, degree / step conversion, clamps, rate limit, head interlock (including that yaw 2.5 with roll 15 cannot be
-reached), the hip map against the table in JOINT_LIMITS.md, sit and stand, the balance law, every fault switching torque
-off, the command timeout, the gyro turned into the body frame and reported only while fresh, what the status lights show, that armed every servo is read each two ticks and none twice in one, that a bench with a few servos reads each of them every idle poll, the bench build's single servo (only it written, clamped, rate-limited, off on a fault or on silence, impossible to arm in other builds), and that a default build or a placeholder config never sends a torque or goal write.
+reached), each leg's hip map against the tables in JOINT_LIMITS.md (the ankle included), the knee x ankle rule, the both-legs rule, random leg commands that never break a rule, sit and stand, the balance law, every fault switching torque
+off (a position that jumps faster than a servo can move among them, tested on readings from a real servo), the command timeout, the gyro turned into the body frame and reported only while fresh, what the status lights show, that armed every servo is read each two ticks and none twice in one, that a bench with a few servos reads each of them every idle poll, the bench build's single servo (only it written, clamped, rate-limited, off on a fault or on silence, impossible to arm in other builds), and that a default build or a placeholder config never sends a torque or goal write.
 The simulated servos follow the public protocol documents; passing these tests says nothing about a real SCS0009.
 
 ## Changing the robot's numbers
@@ -55,7 +56,10 @@ The simulated servos follow the public protocol documents; passing these tests s
 3. `make -C firmware/tests test`, then push the app again.
 
 When the design changes: `python3 firmware/tools/import_design.py --design <design repo>/projects/xgoduck_scs0009`
-refreshes the joint limits, the SIT pose and the hip map, and leaves everything else alone.
+refreshes the joint limits, the SIT pose, the head interlock's window, each leg's hip map, the knee x ankle rule
+and the both-legs rule, and leaves everything else alone. It checks the rules the design writes in words against the
+design's own pose data and stops if a rule lets a measured collision through; where the data is stricter, it says so
+and uses the data.
 
 Per joint: `servo_id` (bus ID), `zero_step` (servo step at the joint's zero; horns are fitted with the servo at mid-range,
 so near 512), `direction` (+1 or -1), `calibrated`. Step = zero_step + direction x round(degrees x 3.41), clamped to

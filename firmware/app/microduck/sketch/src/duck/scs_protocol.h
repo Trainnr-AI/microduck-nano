@@ -40,7 +40,7 @@ constexpr uint8_t kMaxTorque = 16;         // [T] EEPROM, 2 bytes, 0.1 %
 constexpr uint8_t kUnloadCondition = 19;   // [T] EEPROM, bits: 32 overload, 4 overheat, 1 voltage
 constexpr uint8_t kLedAlarm = 20;          // [T] EEPROM
 constexpr uint8_t kHoldingTorque = 37;     // [T] EEPROM, %, factory 20
-constexpr uint8_t kProtectionTime = 38;    // [T] EEPROM, 10 ms, factory 200
+constexpr uint8_t kProtectionTime = 38;    // [T] EEPROM, 10 ms; reads 100 on a new servo (tables say 200)
 constexpr uint8_t kOverloadTorque = 39;    // [T] EEPROM, %, factory 80
 constexpr uint8_t kTorqueEnable = 40;      // [L] RAM, 0 = off, 1 = on
 constexpr uint8_t kGoalPosition = 42;      // [L] RAM, 2 bytes

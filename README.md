@@ -4,9 +4,11 @@ An open build of **Microduck Nano**, a smaller variant of the Microduck walking 
 
 Microduck is a small duck biped by [Pollen Robotics](https://github.com/pollen-robotics/microduck_rl). [XGO-Duck](https://github.com/LuwuDynamics/xgoduck_hardware) by Luwu Dynamics adapts it for Feetech 1910 servos and an Arduino UNO Q. Microduck Nano is XGO-Duck redesigned around 9 g hobby-size bus servos. This repository follows the build from parts to a walking policy on the real robot, using [trainnr](https://github.com/Trainnr-AI/trainnr) for the sim, training and deployment work.
 
-> **Status: design under review, nothing printed.** The robot exists as CAD and a simulation model. An
-> [independent review](docs/project/design-review-2026-11-14.md) found problems that must be fixed before it is built,
-> and it is **not yet safe to build for children**. Firmware runs on a bare Arduino UNO Q with motion locked off.
+> **Status: design closed for a first build (2026-11-18), nothing printed.** The robot exists as CAD and a simulation
+> model. An [independent review](docs/project/design-review-2026-11-14.md) found problems; the design's answers to
+> them (new limits, a regulator window, no battery protection electronics by the owner's choice) have not been
+> reviewed again, and it is **not yet safe to build for children**. Firmware runs on a bare Arduino UNO Q with motion
+> locked off, and holds the closed design's joint limits and leg rules.
 
 ## The robot
 

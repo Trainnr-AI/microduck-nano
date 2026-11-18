@@ -807,3 +807,100 @@ fn a_command_outside_what_the_policy_was_trained_on_is_refused() {
     assert!(matches!(m.check_command(&[0.0, 0.0, f64::NAN]), Err(PolicyError::Command(_))));
     assert!(matches!(m.check_command(&[0.1, 0.0]), Err(PolicyError::Command(_))), "too few values");
 }
+
+// ---------------------------------------------------------------- limits over several joints
+
+const LEG_VECTORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/leg_rule_vectors.txt");
+
+#[test]
+fn the_leg_rules_decide_as_the_firmware_does_on_its_vectors() {
+    // Written by the firmware's own implementation (`make -C firmware/tests leg-vectors`): per line the ten leg
+    // joints before and wanted in tenths of a degree, the firmware's flags, and which joints got the wanted angle.
+    let robot = robot();
+    let rules = robot.leg_limits.rules().expect("leg rules");
+    let text = std::fs::read_to_string(LEG_VECTORS).expect("leg_rule_vectors.txt");
+    let mut cases = 0;
+    let mut held = 0;
+    for (number, line) in text.lines().enumerate().filter(|(_, l)| !l.starts_with('#')) {
+        let words: Vec<i32> = line.split_whitespace().map(|w| w.parse().expect("an integer")).collect();
+        assert_eq!(words.len(), 22, "line {}", number + 1);
+        let leg = |at: usize| -> [f32; 5] { std::array::from_fn(|i| words[at + i] as f32 / 10.0) };
+        let previous = (leg(0), leg(5));
+        let wanted = (leg(10), leg(15));
+        let (mut left, mut right) = wanted;
+        let settled = rules.settle((&previous.0, &previous.1), (&mut left, &mut right));
+        let mut mask = 0;
+        for (i, (got, wanted)) in left.iter().chain(&right).zip(wanted.0.iter().chain(&wanted.1)).enumerate() {
+            if got == wanted {
+                mask |= 1 << i;
+            }
+        }
+        assert_eq!(
+            (i32::from(settled.firmware_flags()), mask),
+            (words[20], words[21]),
+            "line {}: previous {previous:?}, wanted {wanted:?}",
+            number + 1
+        );
+        // Whatever was decided, a held joint is where it was before.
+        for (got, (wanted, previous)) in
+            left.iter().chain(&right).zip(wanted.0.iter().chain(&wanted.1).zip(previous.0.iter().chain(&previous.1)))
+        {
+            assert!(got == wanted || got == previous);
+        }
+        cases += 1;
+        held += usize::from(!settled.unchanged());
+    }
+    assert_eq!(cases, 4000);
+    assert!(held > 1000, "the vectors must exercise the rules, {held} did");
+}
+
+#[test]
+fn the_stand_pose_is_inside_the_leg_rules_and_the_sit_pose_is_not() {
+    // SIT is reached only along the firmware's checked sit / stand path, which is why it may lie outside the map.
+    let text = std::fs::read_to_string(ROBOT_JSON).expect("robot.json");
+    let file: serde_json::Value = serde_json::from_str(&text).expect("json");
+    let robot = robot();
+    let rules = robot.leg_limits.rules().expect("leg rules");
+    let leg = |pose: &str, side: &str| -> [f32; 5] {
+        ["hip_yaw", "hip_roll", "hip_pitch", "knee", "ankle"]
+            .map(|joint| file["poses"][pose][format!("{side}_{joint}")].as_f64().expect("a pose angle") as f32)
+    };
+    assert!(rules.allowed(&leg("STAND", "left"), &leg("STAND", "right")));
+    assert!(!rules.leg_allowed(duck_limits::Side::Left, &leg("SIT", "left")));
+    assert!(!rules.leg_allowed(duck_limits::Side::Right, &leg("SIT", "right")));
+}
+
+#[test]
+fn targets_the_leg_rules_refuse_go_back_to_the_last_pose_and_the_rest_are_untouched() {
+    let robot = robot();
+    let rules = robot.leg_limits.rules().expect("leg rules");
+    let previous = vec![0.0f64; 15];
+    // Left knee to its 68 degree limit with the ankle dropping to -20: the knee x ankle rule holds the ankle.
+    // The head and the right leg carry values that must come through bit for bit.
+    let mut targets = vec![0.0f64; 15];
+    targets[3] = 68f64.to_radians();
+    targets[4] = (-20f64).to_radians();
+    targets[7] = 0.123_456_789_012_345;
+    targets[11] = 10f64.to_radians();
+    let wanted = targets.clone();
+    let settled = duck_runtime::limits::settle_targets(&rules, &previous, &mut targets).expect("fifteen joints");
+    assert_eq!(settled.left, duck_limits::LegVerdict::AnkleHeld);
+    assert!(settled.knee_ankle && !settled.both_legs);
+    assert_eq!(targets[4], 0.0);
+    for i in (0..15).filter(|&i| i != 4) {
+        assert_eq!(targets[i].to_bits(), wanted[i].to_bits(), "joint {i}");
+    }
+    // Both legs forward and toed out: both legs stay, the head still moves.
+    let mut targets = vec![0.0f64; 15];
+    for (first, sign) in [(0, 1.0), (9, -1.0)] {
+        targets[first] = sign * 10f64.to_radians();
+        targets[first + 2] = sign * (-45f64).to_radians();
+    }
+    targets[5] = 0.2;
+    let settled = duck_runtime::limits::settle_targets(&rules, &previous, &mut targets).expect("fifteen joints");
+    assert!(settled.both_legs);
+    assert!(targets[..5].iter().chain(&targets[9..14]).all(|&t| t == 0.0));
+    assert_eq!(targets[5], 0.2);
+    // Too few joints: nothing is decided.
+    assert!(duck_runtime::limits::settle_targets(&rules, &previous[..10], &mut targets).is_none());
+}

@@ -39,6 +39,7 @@ Result BenchServo::arm(uint32_t key, int joint, uint32_t now_ms) {
     return Result::kBusError;
   }
   mode_ = BenchMode::kArmed;
+  write_fails_ = 0;
   last_cmd_ms_ = last_tick_ms_ = now_ms;
   return Result::kOk;
 }
@@ -88,7 +89,7 @@ void BenchServo::tick(uint32_t now_ms, bool robot_armed) {
     stop(BenchMode::kFault);
     return;
   }
-  if (now_ms - last_cmd_ms_ > cfg_.cmd_timeout_ms) {  // the run is over or the Linux side died: go limp
+  if (elapsed_over(now_ms, last_cmd_ms_, cfg_.cmd_timeout_ms)) {  // the run is over or the Linux side died: go limp
     stop(BenchMode::kOff);
     return;
   }
@@ -96,7 +97,13 @@ void BenchServo::tick(uint32_t now_ms, bool robot_armed) {
   uint16_t flags = 0;
   setpoint_deg_ = rate_limit(j, setpoint_deg_, target_deg_, dt, &flags);
   const int16_t goal = deg_to_step(cfg_, joint_, setpoint_deg_);
-  if (bus_.write_goal(j.servo_id, static_cast<uint16_t>(goal), 0, cfg_.servo.goal_speed) != BusError::kOk) {
+  // One unanswered goal write is not a fault: on a real bus a reply is lost now and then (about one in a thousand
+  // here, 2026-11-19), and the next tick writes the goal again. A write the bus's gate refused is: something else
+  // closed it. So is a run of failures as long as the one that makes a servo "not answering".
+  const BusError written = bus_.write_goal(j.servo_id, static_cast<uint16_t>(goal), 0, cfg_.servo.goal_speed);
+  if (written == BusError::kOk) {
+    write_fails_ = 0;
+  } else if (written == BusError::kGated || ++write_fails_ >= cfg_.faults.comm_fail_count) {
     faults_.raise(Fault::kBusWrite, joint_);
     stop(BenchMode::kFault);
   }

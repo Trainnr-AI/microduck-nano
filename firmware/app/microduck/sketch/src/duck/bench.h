@@ -66,6 +66,7 @@ class BenchServo {
   int joint_ = -1;
   float target_deg_ = 0.0f;
   float setpoint_deg_ = 0.0f;
+  uint8_t write_fails_ = 0;  // goal writes in a row that got no answer
   uint32_t last_cmd_ms_ = 0;
   uint32_t last_tick_ms_ = 0;
   ServoReading reading_ = ServoReading();

@@ -15,6 +15,7 @@ use arm::{Guard, Verdict};
 
 use crate::bridge::{Bridge, BridgeError};
 use crate::firmware::{self, Sensed};
+use crate::limits::settle_targets;
 use crate::policy::Policy;
 use crate::record::Recorder;
 use crate::robot::Robot;
@@ -157,6 +158,8 @@ pub struct LoopStats {
     pub unmeasured_chain_ticks: u32,
     pub moves: u32,
     pub holds: u32,
+    /// Ticks on which the leg rules (hip maps, knee x ankle, both legs) held at least one leg joint back.
+    pub leg_rule_ticks: u32,
     /// Round-trip times of the calls made in each tick, in microseconds, sorted.
     pub round_trip_us: Vec<u64>,
     pub last_error: Option<String>,
@@ -201,6 +204,8 @@ pub fn run<S: Read + Write>(
     sinks: &mut Sinks,
 ) -> LoopStats {
     let mut guards = Guards::new(robot, period);
+    // Checked when the robot file was loaded; if it somehow cannot be built, nothing is ever sent.
+    let leg_rules = robot.leg_limits.rules().ok();
     let mut stats = LoopStats::default();
     let start = Instant::now();
     let mut ticker = Ticker::new(period);
@@ -250,8 +255,22 @@ pub fn run<S: Read + Write>(
                         ChainOutcome::Guarded(_) => stats.holds += 1,
                     }
                 }
-                // Only a full set of authorised targets is ever sent; a partial one is dropped.
-                allowed = (next_targets.len() == wanted.len()).then_some(next_targets);
+                // Only a full set of authorised targets is ever sent; a partial one is dropped. A full set then
+                // goes through the limits over several joints, against the pose last sent (the measured one on the
+                // first tick): a leg joint those rules hold stays at that pose.
+                allowed = if next_targets.len() == wanted.len() {
+                    let previous = allowed.take().unwrap_or_else(hold);
+                    leg_rules.as_ref().and_then(|rules| settle_targets(rules, &previous, &mut next_targets)).map(
+                        |settled| {
+                            if !settled.unchanged() {
+                                stats.leg_rule_ticks += 1;
+                            }
+                            next_targets
+                        },
+                    )
+                } else {
+                    None
+                };
             }
             Err(e) => {
                 stats.errors += 1;

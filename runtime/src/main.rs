@@ -352,6 +352,7 @@ fn run(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
     println!("ticks {}   errors {}   missed deadlines {}", stats.ticks, stats.errors, stats.missed_deadlines);
     println!("exchange per tick ({:?}): {}   (period {:.2} ms)", args.exchange, summary(&stats.round_trip_us, 2), period.as_secs_f64() * 1000.0);
     println!("guard verdicts: move {}   hold {}   chain unmeasured {}", stats.moves, stats.holds, stats.unmeasured_chain_ticks);
+    println!("leg rules (hip maps, knee x ankle, both legs): held a leg joint on {} ticks", stats.leg_rule_ticks);
     if policy.is_some() {
         println!("policy: ran {} ticks, skipped {}   inference {}", stats.policy_ran, stats.policy_skipped, summary(&stats.inference_us, 2));
         if let Some(why) = &stats.last_policy_skip {

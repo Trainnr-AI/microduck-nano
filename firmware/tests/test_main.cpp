@@ -351,71 +351,198 @@ static void test_head_interlock() {
   CHECK(yaw == 20.0f && roll == 2.0f);
 }
 
-// The table in JOINT_LIMITS.md is "with the knee in -45..+68": free at all three of those knee grid values.
-static bool table_allowed(const HipMapConfig& m, float pitch, float roll, float yaw) {
-  return hip_pose_allowed(m, pitch, roll, yaw, -45) && hip_pose_allowed(m, pitch, roll, yaw, 0) &&
-         hip_pose_allowed(m, pitch, roll, yaw, 68);
+// The tables in JOINT_LIMITS.md are "with the knee in -45..+68", ankle 0: free at all three of those knee grid values.
+static bool table_allowed(const HipMapConfig& m, bool right, float pitch, float roll, float yaw) {
+  return hip_pose_allowed(m, right, pitch, roll, yaw, -45, 0) && hip_pose_allowed(m, right, pitch, roll, yaw, 0, 0) &&
+         hip_pose_allowed(m, right, pitch, roll, yaw, 68, 0);
 }
 
 static void test_hip_map() {
   const HipMapConfig& m = kRobotConfig.hip;
-  // Cells of the table in JOINT_LIMITS.md section 2 (left leg).
-  CHECK(table_allowed(m, 45, 10, 0));        // +45, yaw 0: -12..+10
-  CHECK(!table_allowed(m, 45, 15, 0));
-  CHECK(table_allowed(m, 45, -12, 0));
-  CHECK(!table_allowed(m, 45, 0, -6.3f));    // +45, toe in: none
-  CHECK(!table_allowed(m, 60, -12, -6.3f));
-  CHECK(table_allowed(m, 60, 0, 0));         // +60, yaw 0: -12..0
-  CHECK(!table_allowed(m, 60, 5, 0));
-  CHECK(table_allowed(m, 75, -8, 0));        // +75, yaw 0: -12..-8
-  CHECK(!table_allowed(m, 75, -4, 0));
-  CHECK(table_allowed(m, 60, 15, 19));       // +60, toe out: -12..+15
-  CHECK(!table_allowed(m, 60, 19.5f, 19));
-  // -90 (leg fully forward): the design table allows these for every knee angle, but the review found the RIGHT
-  // foot meeting the neck bearing plate / body frame with the knee at its 68 deg limit. One map serves both legs,
-  // so the knee-68 cells are blocked for both (review_extra_collisions in robot.json).
-  CHECK(hip_pose_allowed(m, -90, 15, -6.3f, 0));   // -90, toe in: -12..+15 with the knee straight
-  CHECK(!table_allowed(m, -90, 15, -6.3f));        // ...but not over the whole knee range any more
-  CHECK(!table_allowed(m, -90, 19.5f, -6.3f));
-  CHECK(hip_pose_allowed(m, -90, 0, 19, 0));       // -90, toe out: -12..0 with the knee straight
-  CHECK(!hip_pose_allowed(m, -90, 0, 19, 68));     // review: right foot vs neck bearing plate, 6.5 mm
-  CHECK(!table_allowed(m, -90, 5, 19));
-  CHECK(table_allowed(m, 15, 10, -6.3f));    // +15, toe in: -8..+10
-  CHECK(!table_allowed(m, 15, -12, -6.3f));
-  CHECK(!table_allowed(m, 15, 15, -6.3f));
-  CHECK(table_allowed(m, 30, 5, -6.3f));     // +30, toe in: -8..+5
-  CHECK(!table_allowed(m, 30, 10, -6.3f));
-  CHECK(table_allowed(m, -30, 19.5f, 19));   // -45..0: all
-  CHECK(table_allowed(m, -30, -12, -6.3f));
-  CHECK(hip_pose_allowed(m, 0, 10, -6.3f, -90));   // folded at 0: +5..+19.5
-  CHECK(!hip_pose_allowed(m, 0, 0, -6.3f, -90));
-  CHECK(!hip_pose_allowed(m, 60, 0, 0, -90));      // the fold / sit-up collision: hip +60, knee -90
-  // Stricter neighbour between grid values, in every axis.
-  CHECK(hip_pose_allowed(m, 45, 5, 0, -45));       // pitch 45 allows +5 here, pitch 60 does not
-  CHECK(!hip_pose_allowed(m, 60, 5, 0, -45));
-  CHECK(!hip_pose_allowed(m, 50, 5, 0, -45));
-  CHECK(hip_pose_allowed(m, 50, 0, 0, -45));
-  CHECK(!hip_pose_allowed(m, 45, 12, 0, 0));       // roll between free 10 and colliding 15
-  CHECK(!hip_pose_allowed(m, 45, 5, -3, 0));       // yaw between 0 (free) and -6.3 (collides)
-  CHECK(!hip_pose_allowed(m, 30, 10, 0, -60));     // knee between -45 (free) and -90 (collides)
-  CHECK(hip_pose_allowed(m, 30, 10, 0, -30));
-  CHECK(!hip_pose_allowed(m, NAN, 0, 0, 0));
-  // Right leg = mirror.
+  const bool L = false, R = true;
+  // Rows +0..+85 of the tables in JOINT_LIMITS.md section 2 are the same for both legs.
+  for (bool leg : {L, R}) {
+    CHECK(table_allowed(m, leg, 45, 10, 0));        // +45, yaw 0: -12..+10
+    CHECK(!table_allowed(m, leg, 45, 15, 0));
+    CHECK(table_allowed(m, leg, 45, -12, 0));
+    CHECK(!table_allowed(m, leg, 45, 0, -6.3f));    // +45, toe in: none
+    CHECK(!table_allowed(m, leg, 60, -12, -6.3f));
+    CHECK(table_allowed(m, leg, 60, 0, 0));         // +60, yaw 0: -12..0
+    CHECK(!table_allowed(m, leg, 60, 5, 0));
+    CHECK(table_allowed(m, leg, 75, -8, 0));        // +75, yaw 0: -12..-8
+    CHECK(!table_allowed(m, leg, 75, -4, 0));
+    CHECK(table_allowed(m, leg, 60, 15, 19));       // +60, toe out: -12..+15
+    CHECK(!table_allowed(m, leg, 60, 19.5f, 19));
+    CHECK(table_allowed(m, leg, 15, -8, -6.3f));    // +15, toe in: -8..-4 and +5..+10
+    CHECK(table_allowed(m, leg, 15, 10, -6.3f));
+    CHECK(!table_allowed(m, leg, 15, 0, -6.3f));
+    CHECK(!table_allowed(m, leg, 15, -12, -6.3f));
+    CHECK(!table_allowed(m, leg, 15, 15, -6.3f));
+    // ...but at -4 the foot bearing plate touches the enclosure (crossing by 0.00 mm, knee -45): a touch is not
+    // allowed here, although the design's table lists the cell as free.
+    CHECK(!hip_pose_allowed(m, leg, 15, -4, -6.3f, -45, 0));
+    CHECK(hip_pose_allowed(m, leg, 15, -4, -6.3f, 0, 0));
+    CHECK(table_allowed(m, leg, 30, 5, -6.3f));     // +30, toe in: -4..+5
+    CHECK(!table_allowed(m, leg, 30, 10, -6.3f));
+    CHECK(table_allowed(m, leg, -30, 19.5f, 19));   // -30..0: all
+    CHECK(table_allowed(m, leg, -30, -12, -6.3f));
+    CHECK(hip_pose_allowed(m, leg, 0, 10, -6.3f, -90, 0));   // folded at 0: +10..+19.5
+    CHECK(!hip_pose_allowed(m, leg, 0, 5, -6.3f, -90, 0));
+    CHECK(!hip_pose_allowed(m, leg, 60, 0, 0, -90, 0));      // the fold / sit-up collision: hip +60, knee -90
+    // Stricter neighbour between grid values, in every axis.
+    CHECK(hip_pose_allowed(m, leg, 45, 5, 0, -45, 0));       // pitch 45 allows +5 here, pitch 60 does not
+    CHECK(!hip_pose_allowed(m, leg, 60, 5, 0, -45, 0));
+    CHECK(!hip_pose_allowed(m, leg, 50, 5, 0, -45, 0));
+    CHECK(hip_pose_allowed(m, leg, 50, 0, 0, -45, 0));
+    CHECK(!hip_pose_allowed(m, leg, 45, 12, 0, 0, 0));       // roll between free 10 and colliding 15
+    CHECK(!hip_pose_allowed(m, leg, 45, 5, -3, 0, 0));       // yaw between 0 (free) and -6.3 (collides)
+    CHECK(!hip_pose_allowed(m, leg, 30, 10, 0, -60, 0));     // knee between -45 (free) and -90 (collides)
+    CHECK(hip_pose_allowed(m, leg, 30, 10, 0, -30, 0));
+    CHECK(!hip_pose_allowed(m, leg, NAN, 0, 0, 0, 0));
+    CHECK(!hip_pose_allowed(m, leg, 0, 0, 0, 0, NAN));
+    // The ankle is the fifth axis. Hip +30, yaw 0, folded: roll 0 is free with the ankle level or lowered, but with
+    // it raised to +23 the foot meets the Uno Q cover; between 0 and +23 the stricter neighbour applies, and past
+    // +23 (not measured) the +23 values are used.
+    CHECK(hip_pose_allowed(m, leg, 30, 0, 0, -90, 0));
+    CHECK(hip_pose_allowed(m, leg, 30, 0, 0, -90, -23));
+    CHECK(hip_pose_allowed(m, leg, 30, 0, 0, -90, -10));
+    CHECK(!hip_pose_allowed(m, leg, 30, 0, 0, -90, 23));
+    CHECK(!hip_pose_allowed(m, leg, 30, 0, 0, -90, 5));
+    CHECK(!hip_pose_allowed(m, leg, 30, 0, 0, -90, 60));
+    CHECK(hip_pose_allowed(m, leg, 30, -4, 0, -90, 23));
+    CHECK(!hip_pose_allowed(m, leg, 85, 0, 0, 0, 23));       // leg back, ankle raised: foot vs Uno Q cover, 1.3 mm
+    CHECK(hip_pose_allowed(m, leg, 85, 0, 0, 0, 0));
+  }
+  // Rows -45..-90 (leg forward): the right leg has less room, its foot reaches the neck bearing plate and the body
+  // frame with the knee at its limit. Each leg is looked up in its own map.
+  CHECK(table_allowed(m, L, -90, 10, -6.3f));       // left -90, toe in: -12..+10
+  CHECK(!table_allowed(m, L, -90, 15, -6.3f));
+  CHECK(table_allowed(m, R, -90, 0, -6.3f));        // right -90, toe in: -12..0
+  CHECK(!table_allowed(m, R, -90, 5, -6.3f));
+  CHECK(table_allowed(m, L, -90, 0, 19));           // left -90, toe out: -12..0
+  CHECK(!table_allowed(m, L, -90, 5, 19));
+  CHECK(!table_allowed(m, R, -90, -12, 19));        // right -90 and -75, toe out: none
+  CHECK(!table_allowed(m, R, -75, -12, 19));
+  CHECK(hip_pose_allowed(m, R, -90, 0, 19, 0, 0));  // (with the knee straight the right leg is clear there)
+  CHECK(!hip_pose_allowed(m, R, -90, 0, 19, 68, 0));
+  CHECK(table_allowed(m, L, -75, 19.5f, 0));        // left -75: all; right -75, yaw 0: -12..0
+  CHECK(table_allowed(m, R, -75, 0, 0));
+  CHECK(!table_allowed(m, R, -75, 5, 0));
+  CHECK(table_allowed(m, L, -60, 15, 19));          // left -60, toe out: -12..+15; right: -12..-8
+  CHECK(table_allowed(m, R, -60, -8, 19));
+  CHECK(!table_allowed(m, R, -60, -4, 19));
+  CHECK(table_allowed(m, L, -45, 19.5f, 19));       // left -45: all; right -45, toe out: -12..+5
+  CHECK(table_allowed(m, R, -45, 5, 19));
+  CHECK(!table_allowed(m, R, -45, 10, 19));
+  // One cell the raised ankle takes from the right leg only (foot bearing plate vs the Uno Q cover's screws).
+  CHECK(hip_pose_allowed(m, L, 45, -4, 0, -90, 23));
+  CHECK(!hip_pose_allowed(m, R, 45, -4, 0, -90, 23));
+  CHECK(hip_pose_allowed(m, R, 45, -4, 0, -90, 0));
+
+  // A full joint vector: the right leg's own signs are flipped before the lookup.
+  const RobotConfig& c = kRobotConfig;
   float q[kNumJoints] = {0};
-  q[kRHipPitch] = -45; q[kRHipRoll] = -10; q[kRHipYaw] = 0; q[kRKnee] = 0;
-  CHECK(leg_allowed(m, q, true));
+  q[kRHipPitch] = -45; q[kRHipRoll] = -10; q[kRHipYaw] = 0; q[kRKnee] = 0;   // right leg back 45, rolled out 10
+  CHECK(leg_allowed(c, q, true));
   q[kRHipRoll] = -15;
-  CHECK(!leg_allowed(m, q, true));
-  // STAND is inside the map. SIT is NOT (toe-in 3 deg with hip pitch 70): the sit path was
+  CHECK(!leg_allowed(c, q, true));
+  float fwd[kNumJoints] = {0};
+  fwd[kLHipPitch] = -90; fwd[kLHipYaw] = 19; fwd[kLKnee] = 68; fwd[kLAnkle] = 0;
+  fwd[kRHipPitch] = 90; fwd[kRHipYaw] = -19; fwd[kRKnee] = -68; fwd[kRAnkle] = 0;
+  CHECK(leg_allowed(c, fwd, false));
+  CHECK(!leg_allowed(c, fwd, true));                 // the same pose mirrored: right foot vs the body frame
+  // STAND (ankles at 22) is inside both maps. SIT is NOT (toe-in 3 deg with hip pitch 70): the sit path was
   // checked on its own, which is why the filter has a checked-path mode.
   float stand[kNumJoints], sit[kNumJoints];
-  pose_to_joints(kRobotConfig.stand, stand);
-  pose_to_joints(kRobotConfig.sit, sit);
-  CHECK(leg_allowed(m, stand, false) && leg_allowed(m, stand, true));
-  CHECK(!leg_allowed(m, sit, false) && !leg_allowed(m, sit, true));
+  pose_to_joints(c.stand, stand);
+  pose_to_joints(c.sit, sit);
+  CHECK(leg_allowed(c, stand, false) && leg_allowed(c, stand, true));
+  CHECK(!leg_allowed(c, sit, false) && !leg_allowed(c, sit, true));
+  CHECK(both_legs_allowed(c.both_legs, stand) && both_legs_allowed(c.both_legs, sit));
 }
 
-static void test_filter_hip_map() {
+static void test_knee_ankle_rule() {
+  const KneeAnkleConfig& k = kRobotConfig.knee_ankle;
+  // JOINT_LIMITS.md: with the knee past +30, ankle >= -60 at knee 40, -45 at 45-50, -35 at 55, -25 at 60, -10 at 64,
+  // 0 at 68; between rows the stricter (the next row up).
+  CHECK(knee_ankle_allowed(k, -90, -85));
+  CHECK(knee_ankle_allowed(k, 30, -85));
+  CHECK(knee_ankle_allowed(k, 35, -60) && !knee_ankle_allowed(k, 35, -61));
+  CHECK(knee_ankle_allowed(k, 40, -60));
+  CHECK(knee_ankle_allowed(k, 41, -45) && !knee_ankle_allowed(k, 41, -50));
+  CHECK(knee_ankle_allowed(k, 50, -45));
+  CHECK(knee_ankle_allowed(k, 52, -35) && !knee_ankle_allowed(k, 52, -40));
+  CHECK(knee_ankle_allowed(k, 55, -35));
+  CHECK(knee_ankle_allowed(k, 60, -25) && !knee_ankle_allowed(k, 60, -26));
+  CHECK(knee_ankle_allowed(k, 62, -10) && !knee_ankle_allowed(k, 62, -20));
+  CHECK(knee_ankle_allowed(k, 64, -10));
+  CHECK(knee_ankle_allowed(k, 66, 0) && !knee_ankle_allowed(k, 66, -5));
+  CHECK(knee_ankle_allowed(k, 68, 0) && !knee_ankle_allowed(k, 68, -1));
+  CHECK(knee_ankle_allowed(k, 68, 90));
+  CHECK(!knee_ankle_allowed(k, NAN, 0) && !knee_ankle_allowed(k, 0, NAN));
+  // The walking envelope's corner (knee 55, ankle -23) is inside.
+  CHECK(knee_ankle_allowed(k, 55, -23));
+  // Through leg_allowed(), with the right leg's own signs (knee -68 is its folded limit, ankle + is its "down").
+  const RobotConfig& c = kRobotConfig;
+  float q[kNumJoints] = {0};
+  q[kLKnee] = 68; q[kLAnkle] = -10;
+  CHECK(!leg_allowed(c, q, false));
+  q[kLAnkle] = 5;
+  CHECK(leg_allowed(c, q, false));
+  q[kRKnee] = -68; q[kRAnkle] = 10;
+  CHECK(!leg_allowed(c, q, true));
+  q[kRAnkle] = -5;
+  CHECK(leg_allowed(c, q, true));
+}
+
+// Both legs at the same left-signs pose.
+static void both_at(float q[kNumJoints], float pitch, float yaw, float roll) {
+  q[kLHipPitch] = pitch; q[kLHipYaw] = yaw; q[kLHipRoll] = roll;
+  q[kRHipPitch] = -pitch; q[kRHipYaw] = -yaw; q[kRHipRoll] = -roll;
+}
+
+static void test_both_legs_rule() {
+  const BothLegsConfig& b = kRobotConfig.both_legs;
+  float q[kNumJoints] = {0};
+  CHECK(both_legs_allowed(b, q));
+  // The design's rule: never both legs forward of -30 while both hips are toed out.
+  both_at(q, -45, 5, 0);
+  CHECK(!both_legs_allowed(b, q));
+  both_at(q, -90, 19, 5);
+  CHECK(!both_legs_allowed(b, q));
+  both_at(q, -45, 0, 0);            // not toed out
+  CHECK(both_legs_allowed(b, q));
+  both_at(q, -45, 5, 0);
+  q[kRHipYaw] = 1;                  // the right hip toed in (its own sign): allowed
+  CHECK(both_legs_allowed(b, q));
+  both_at(q, -45, 5, 0);
+  q[kRHipPitch] = -45;              // the right leg back instead (its own sign): one forward, one back is clear
+  CHECK(both_legs_allowed(b, q));
+  both_at(q, -45, 5, 0);
+  q[kLHipPitch] = -20;              // only one leg forward of -30, not rolled in
+  CHECK(both_legs_allowed(b, q));
+  // The band the data adds: the design's sweep has the feet crossing 0.52 mm with both legs at exactly -30, toed
+  // out 19 and rolled in -12. Forward of -15 with a hip rolled in past -8 is not allowed either.
+  both_at(q, -30, 19, -12);
+  CHECK(!both_legs_allowed(b, q));
+  both_at(q, -30, 19, -8);
+  CHECK(both_legs_allowed(b, q));
+  both_at(q, -20, 1, -4);
+  q[kRHipRoll] = 9;                 // one hip rolled in 9 (the right's own sign)
+  CHECK(!both_legs_allowed(b, q));
+  both_at(q, -15, 19, -12);         // at -15 the sweep is clear
+  CHECK(both_legs_allowed(b, q));
+  both_at(q, -22, 3, -5);           // a stand with the toes a little out stays allowed
+  CHECK(both_legs_allowed(b, q));
+  q[kLHipYaw] = NAN;
+  CHECK(!both_legs_allowed(b, q));
+}
+
+static bool legs_ok(const RobotConfig& c, const float q[kNumJoints]) {
+  return leg_allowed(c, q, false) && leg_allowed(c, q, true) && both_legs_allowed(c.both_legs, q);
+}
+
+static void test_filter_leg_rules() {
   RobotConfig c = calibrated_config();
   SafetyFilter f(c);
   float q[kNumJoints] = {0};
@@ -429,11 +556,10 @@ static void test_filter_hip_map() {
   uint16_t flags = 0;
   for (int i = 0; i < 300; ++i) {
     flags |= f.step(t, 0.01f, false, out);
-    CHECK(leg_allowed(c.hip, out, false));
-    CHECK(leg_allowed(c.hip, out, true));
+    CHECK(legs_ok(c, out));
   }
-  CHECK(flags & kFlagHipMapLeft);
-  CHECK(!(flags & kFlagHipMapRight));
+  CHECK(flags & kFlagLegLeft);
+  CHECK(!(flags & (kFlagLegRight | kFlagKneeAnkle | kFlagBothLegs)));
   CHECK(f.setpoint()[kLHipPitch] <= 30.001f);   // at +45 with the toe in nothing is free
   CHECK_NEAR(f.setpoint()[kRHipPitch], -30.0f, 1e-3);
   // In free mode the SIT pose cannot be reached; on the checked path it can.
@@ -442,12 +568,112 @@ static void test_filter_hip_map() {
   pose_to_joints(c.sit, sit);
   f.reset(stand);
   run_filter(f, sit, 300, false, &flags);
-  CHECK((flags & kFlagHipMapLeft) && (flags & kFlagHipMapRight));
+  CHECK((flags & kFlagLegLeft) && (flags & kFlagLegRight));
   CHECK(f.setpoint()[kLHipPitch] <= 30.001f);
   f.reset(stand);
   run_filter(f, sit, 300, true, &flags);
-  CHECK(!(flags & (kFlagHipMapLeft | kFlagHipMapRight)));
+  CHECK(!(flags & (kFlagLegLeft | kFlagLegRight | kFlagKneeAnkle | kFlagBothLegs)));
   CHECK_NEAR(f.setpoint()[kLHipPitch], 70.0f, 1e-3);
+
+  // Knee x ankle: folding the left knee with the ankle at -30 stops at the last row that allows -30 (knee 55).
+  f.reset(q);
+  for (int i = 0; i < kNumJoints; ++i) t[i] = 0.0f;
+  t[kLAnkle] = -30.0f;
+  t[kLKnee] = 68.0f;
+  flags = 0;
+  for (int i = 0; i < 300; ++i) {
+    flags |= f.step(t, 0.01f, false, out);
+    CHECK(legs_ok(c, out));
+  }
+  CHECK((flags & kFlagLegLeft) && (flags & kFlagKneeAnkle));
+  CHECK(!(flags & kFlagLegRight));
+  CHECK(f.setpoint()[kLKnee] <= 55.001f && f.setpoint()[kLKnee] > 50.0f);
+  CHECK_NEAR(f.setpoint()[kLAnkle], -30.0f, 1e-3);
+  // Raise the ankle to 0 and the knee goes on to its limit; then the ankle cannot come down again.
+  t[kLAnkle] = 0.0f;
+  run_filter(f, t, 300, false, nullptr);
+  CHECK_NEAR(f.setpoint()[kLKnee], 68.0f, 1e-3);
+  t[kLAnkle] = -20.0f;
+  run_filter(f, t, 300, false, &flags);
+  CHECK((flags & kFlagLegLeft) && (flags & kFlagKneeAnkle));
+  CHECK_NEAR(f.setpoint()[kLAnkle], 0.0f, 1e-3);
+  CHECK_NEAR(f.setpoint()[kLKnee], 68.0f, 1e-3);
+  // The same on the right leg, in its own signs, while the hip stays free to move.
+  f.reset(q);
+  for (int i = 0; i < kNumJoints; ++i) t[i] = 0.0f;
+  t[kRAnkle] = 30.0f;
+  t[kRKnee] = -68.0f;
+  run_filter(f, t, 300, false, &flags);
+  CHECK((flags & kFlagLegRight) && (flags & kFlagKneeAnkle) && !(flags & kFlagLegLeft));
+  CHECK(f.setpoint()[kRKnee] >= -55.001f && f.setpoint()[kRKnee] < -50.0f);
+
+  // A raised ankle takes hip cells away: hip +30, folded, roll 0 is reached with the ankle level, and then the
+  // ankle is held near 0 while the rest of the leg stays where it is.
+  f.reset(q);
+  for (int i = 0; i < kNumJoints; ++i) t[i] = 0.0f;
+  t[kLKnee] = -90.0f;
+  run_filter(f, t, 300, false, nullptr);
+  t[kLHipPitch] = 30.0f;
+  run_filter(f, t, 300, false, &flags);
+  CHECK_NEAR(f.setpoint()[kLHipPitch], 30.0f, 1e-3);
+  t[kLAnkle] = 23.0f;
+  flags = 0;
+  for (int i = 0; i < 300; ++i) {
+    flags |= f.step(t, 0.01f, false, out);
+    CHECK(legs_ok(c, out));
+  }
+  CHECK(flags & kFlagLegLeft);
+  CHECK(!(flags & kFlagKneeAnkle));
+  CHECK(f.setpoint()[kLAnkle] <= 0.001f);
+  CHECK_NEAR(f.setpoint()[kLHipPitch], 30.0f, 1e-3);
+
+  // Both legs: toed out, swinging both forward stops at -30; one leg may then go on alone if the other comes back.
+  f.reset(q);
+  for (int i = 0; i < kNumJoints; ++i) t[i] = 0.0f;
+  both_at(t, -60.0f, 10.0f, 0.0f);
+  flags = 0;
+  for (int i = 0; i < 300; ++i) {
+    flags |= f.step(t, 0.01f, false, out);
+    CHECK(legs_ok(c, out));
+  }
+  CHECK(flags & kFlagBothLegs);
+  CHECK(!(flags & (kFlagLegLeft | kFlagLegRight)));
+  CHECK(f.setpoint()[kLHipPitch] >= -30.0f - 1.81f && f.setpoint()[kLHipPitch] < -25.0f);
+  CHECK(f.setpoint()[kRHipPitch] <= 30.0f + 1.81f && f.setpoint()[kRHipPitch] > 25.0f);
+  t[kLHipPitch] = 0.0f;
+  run_filter(f, t, 300, false, nullptr);
+  CHECK_NEAR(f.setpoint()[kLHipPitch], 0.0f, 1e-3);
+  CHECK_NEAR(f.setpoint()[kRHipPitch], 60.0f, 1e-3);
+
+  // Random leg commands over the whole range of every leg joint, from STAND: no rule is broken on any tick, and
+  // the legs do keep moving (the rules do not lock the robot up).
+  f.reset(stand);
+  for (int i = 0; i < kNumJoints; ++i) t[i] = stand[i];
+  unsigned seed = 2026;
+  const int legs[10] = {kLHipYaw, kLHipRoll, kLHipPitch, kLKnee, kLAnkle,
+                        kRHipYaw, kRHipRoll, kRHipPitch, kRKnee, kRAnkle};
+  float travelled = 0.0f;
+  int held_ticks = 0;
+  for (int i = 0; i < 60000; ++i) {
+    if (i % 41 == 0) {
+      for (int j : legs) {
+        seed = seed * 1103515245u + 12345u;
+        const float u = static_cast<float>((seed >> 8) % 10001) / 10000.0f;
+        t[j] = c.joints[j].min_deg + u * (c.joints[j].max_deg - c.joints[j].min_deg);
+      }
+    }
+    float before[kNumJoints];
+    for (int j = 0; j < kNumJoints; ++j) before[j] = f.setpoint()[j];
+    const uint16_t fl = f.step(t, 0.01f, false, out);
+    if (!legs_ok(c, out)) {
+      CHECK(false);
+      break;
+    }
+    if (fl & (kFlagLegLeft | kFlagLegRight | kFlagBothLegs)) ++held_ticks;
+    for (int j : legs) travelled += fabsf(out[j] - before[j]);
+  }
+  CHECK(travelled > 100000.0f);
+  CHECK(held_ticks > 1000);
 }
 
 // -------------------------------------------------------------------- math
@@ -1129,6 +1355,126 @@ static void test_bench_servo() {
   CHECK(fake.writes.size() == writes && b.idle());
 }
 
+static void test_position_jump_is_a_fault() {
+  const FaultConfig& fc = kRobotConfig.faults;
+  auto feedback_at = [](int position) {
+    Feedback fb = {};
+    fb.position = static_cast<int16_t>(position);
+    fb.voltage_dv = 50;
+    fb.temperature_c = 25;
+    return fb;
+  };
+  // A servo moving flat out (2000 steps/s, read every 20 ms) is not a jump.
+  {
+    FaultMonitor m(fc);
+    for (int i = 0; i < 20; ++i) m.on_feedback(kLKnee, feedback_at(100 + 40 * i), 1000 + 20 * static_cast<uint32_t>(i));
+    CHECK(m.fault() == Fault::kNone);
+    // A long gap between reads allows as much as the servo could have moved in it.
+    m.on_feedback(kLKnee, feedback_at(100), 3000);
+    CHECK(m.fault() == Fault::kNone);
+    // The same distance in one 20 ms read interval is a jump.
+    m.on_feedback(kLKnee, feedback_at(900), 3020);
+    CHECK(m.fault() == Fault::kPositionJump && m.fault_joint() == kLKnee);
+  }
+  // What a real SCS0009 returned while its horn sat outside the sensing arc (2026-11-18): noise that looks like a
+  // mid-range angle. Read at the armed rate it is caught within a few reads.
+  {
+    const int noise[] = {682, 611, 608, 607, 652, 682, 682, 664, 664, 618, 619, 601, 639, 638, 636, 634, 679};
+    FaultMonitor m(fc);
+    int reads = 0;
+    for (int v : noise) {
+      m.on_feedback(kHeadYaw, feedback_at(v), 5000 + 20 * static_cast<uint32_t>(reads));
+      ++reads;
+      if (m.fault() != Fault::kNone) break;
+    }
+    CHECK(m.fault() == Fault::kPositionJump && m.fault_joint() == kHeadYaw);
+    CHECK(reads <= 5);
+    // clear() forgets the last position: the first read after it is never a jump.
+    m.clear();
+    m.on_feedback(kHeadYaw, feedback_at(10), 6000);
+    CHECK(m.fault() == Fault::kNone);
+  }
+  // In the control loop: armed at STAND, one servo's position jumps; torque goes off everywhere and stays off.
+  {
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    r.run(20);
+    CHECK(r.ctl.status().mode == Mode::kArmed);
+    const uint8_t id = r.cfg.joints[kRAnkle].servo_id;
+    r.fake.servo[id].set_position(static_cast<uint16_t>(r.fake.servo[id].position() + 150));
+    r.run(5);
+    CHECK(r.ctl.status().mode == Mode::kFault && r.ctl.status().fault == Fault::kPositionJump);
+    CHECK(r.ctl.status().fault_joint == kRAnkle);
+    CHECK(r.fake.torque_count() == 0 && !r.bus.motion_allowed());
+  }
+}
+
+static void test_a_command_stamped_after_the_tick_is_not_silence() {
+  // The clock helper: a time a little after "now" is no time at all, not 49 days; the wrap of the clock is fine.
+  CHECK(!elapsed_over(1000, 1001, 500));
+  CHECK(!elapsed_over(1000, 600, 500));
+  CHECK(elapsed_over(1101, 600, 500));
+  CHECK(!elapsed_over(5, 0xFFFFFFF0u, 500));
+  CHECK(elapsed_over(600, 0xFFFFFFF0u, 500));
+  // A bench servo whose command arrives a millisecond after the tick's own time stays armed (on the board the
+  // command is stamped when it arrives, the tick when the loop started), and real silence still switches it off.
+  RobotConfig c = kRobotConfig;
+  c.joints[kLKnee].servo_id = 7;
+  c.joints[kLKnee].zero_step = 512;
+  c.joints[kLKnee].direction = 1;
+  c.joints[kLKnee].calibrated = true;
+  FakeBus fake;
+  ScsBus bus(fake);
+  fake.add(7);
+  BenchServo b(c, bus, true);
+  uint32_t now = 1000;
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  for (int i = 0; i < 300; ++i) {
+    now += 10;
+    CHECK(b.set_target(5.0f, now + 1) == Result::kOk);
+    b.tick(now, false);
+  }
+  CHECK(b.armed());
+  for (int i = 0; i < 60; ++i) {
+    now += 10;
+    b.tick(now, false);
+  }
+  CHECK(!b.armed() && b.state().fault == Fault::kNone && fake.torque_count() == 0);
+  // A reply lost now and then is not a fault either: the servo is silent for one tick in every fifty, and the bench
+  // servo stays armed; silent for good, it is switched off as "not answering".
+  {
+    FakeBus lossy;
+    ScsBus lossy_bus(lossy);
+    lossy.add(7);
+    BenchServo lb(c, lossy_bus, true);
+    uint32_t t = 1000;
+    CHECK(lb.arm(kArmKey, kLKnee, t) == Result::kOk);
+    for (int i = 0; i < 500; ++i) {
+      t += 10;
+      lossy.servo[7].present = (i % 50) != 49;
+      CHECK(lb.set_target(3.0f, t) == Result::kOk || !lb.armed());
+      lb.tick(t, false);
+    }
+    CHECK(lb.armed());
+    lossy.servo[7].present = false;
+    for (int i = 0; i < 10 && lb.armed(); ++i) {
+      t += 10;
+      lb.set_target(3.0f, t);
+      lb.tick(t, false);
+    }
+    CHECK(!lb.armed() && lb.state().mode == BenchMode::kFault);
+    CHECK(lb.state().fault == Fault::kComm || lb.state().fault == Fault::kBusWrite);
+  }
+  // The robot's own command timeout, the same way: a heartbeat stamped just after the tick is not a timeout.
+  Rig r(calibrated_config());
+  r.arm_at(r.cfg.stand);
+  for (int i = 0; i < 100; ++i) {
+    r.ctl.heartbeat(r.now + 11);  // the tick below is at now + 10: the heartbeat is stamped 1 ms after it
+    r.run(1, false);
+    CHECK(!(r.ctl.status().flags & kStatCmdTimeout));
+  }
+}
+
 static void test_command_timeout_holds() {
   RobotConfig slow = calibrated_config();
   slow.joints[kNeckPitch].max_speed_dps = 40.0f;   // so the move outlasts the timeout
@@ -1150,7 +1496,62 @@ static void test_command_timeout_holds() {
   CHECK(r.ctl.status().mode == Mode::kArmed && r.fake.torque_count() == 15);
 }
 
-int main() {
+// Cases for the Rust implementation of the leg rules (runtime/limits) to be checked against: per line, the ten leg
+// joints before and wanted (tenths of a degree; left leg then right leg, each hip yaw, hip roll, hip pitch, knee,
+// ankle, own signs), the flags settle_legs() returned, and a mask with bit i set where joint i got the wanted
+// angle. A third of the cases start on the hip map's grid values, where its edges are.
+static int print_leg_vectors() {
+  const RobotConfig& c = kRobotConfig;
+  const int legs[10] = {kLHipYaw, kLHipRoll, kLHipPitch, kLKnee, kLAnkle,
+                        kRHipYaw, kRHipRoll, kRHipPitch, kRKnee, kRAnkle};
+  const float* grids[5] = {c.hip.yaw, c.hip.roll, c.hip.pitch, c.hip.knee, c.hip.ankle};
+  const int grid_n[5] = {kHipYawN, kHipRollN, kHipPitchN, kHipKneeN, kHipAnkleN};
+  unsigned seed = 20261118u;
+  auto next = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 8) & 0xFFFFFFu;
+  };
+  printf("# Leg-rule vectors, written by `make -C firmware/tests leg-vectors`; do not edit. See test_main.cpp.\n");
+  for (int n = 0; n < 4000; ++n) {
+    int prev_k[10], want_k[10];
+    float prev[kNumJoints] = {0}, want[kNumJoints] = {0};
+    for (int i = 0; i < 10; ++i) {
+      const JointConfig& j = c.joints[legs[i]];
+      const int lo = static_cast<int>(lroundf(j.min_deg * 10.0f)), hi = static_cast<int>(lroundf(j.max_deg * 10.0f));
+      int k = lo + static_cast<int>(next() % static_cast<unsigned>(hi - lo + 1));
+      if (n % 3 == 0) {  // a grid value of this joint's axis, in this leg's own sign
+        const int axis = i % 5;
+        const float g = grids[axis][next() % static_cast<unsigned>(grid_n[axis])];
+        k = static_cast<int>(lroundf((i < 5 ? g : -g) * 10.0f));
+      }
+      if (k < lo) k = lo;
+      if (k > hi) k = hi;
+      prev_k[i] = k;
+      const int reach = (n % 5 == 0) ? 400 : 30;  // mostly a tick's worth of motion, sometimes a jump
+      k += static_cast<int>(next() % static_cast<unsigned>(2 * reach + 1)) - reach;
+      if (next() % 4 == 0) k = prev_k[i];  // this joint was not asked to move
+      if (k < lo) k = lo;
+      if (k > hi) k = hi;
+      want_k[i] = k;
+      prev[legs[i]] = static_cast<float>(prev_k[i]) / 10.0f;
+      want[legs[i]] = static_cast<float>(want_k[i]) / 10.0f;
+    }
+    float out[kNumJoints];
+    for (int j = 0; j < kNumJoints; ++j) out[j] = want[j];
+    const unsigned flags = settle_legs(c, prev, out);
+    unsigned mask = 0;
+    for (int i = 0; i < 10; ++i) {
+      if (out[legs[i]] == want[legs[i]]) mask |= 1u << i;
+    }
+    for (int i = 0; i < 10; ++i) printf("%d ", prev_k[i]);
+    for (int i = 0; i < 10; ++i) printf("%d ", want_k[i]);
+    printf("%u %u\n", flags, mask);
+  }
+  return 0;
+}
+
+int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "--leg-vectors") == 0) return print_leg_vectors();
   RUN(test_protocol_packets);
   RUN(test_protocol_parse);
   RUN(test_bus_reads);
@@ -1159,7 +1560,9 @@ int main() {
   RUN(test_safety_clamp_and_rate);
   RUN(test_head_interlock);
   RUN(test_hip_map);
-  RUN(test_filter_hip_map);
+  RUN(test_knee_ankle_rule);
+  RUN(test_both_legs_rule);
+  RUN(test_filter_leg_rules);
   RUN(test_fmath_against_libm);
   RUN(test_motion_and_balance);
   RUN(test_arming_is_refused_by_default);
@@ -1167,6 +1570,8 @@ int main() {
   RUN(test_sit_and_stand);
   RUN(test_balance_in_the_loop);
   RUN(test_faults_switch_torque_off);
+  RUN(test_position_jump_is_a_fault);
+  RUN(test_a_command_stamped_after_the_tick_is_not_silence);
   RUN(test_command_timeout_holds);
   RUN(test_gyro_in_status);
   RUN(test_status_display);

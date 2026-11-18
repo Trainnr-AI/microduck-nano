@@ -11,6 +11,7 @@ pub mod bench;
 pub mod bridge;
 pub mod control;
 pub mod firmware;
+pub mod limits;
 pub mod policy;
 pub mod record;
 pub mod robot;

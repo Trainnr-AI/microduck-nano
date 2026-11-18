@@ -64,6 +64,12 @@ sensors. **Change:** add
 - **body-level faults:** fall detection from an IMU;
 - **a per-robot fault response:** an arm must hold; a fallen biped must release. Today "hold" is built in.
 
+The Nano's runtime has the combination limits since 2026-11-18 as a `no_std` crate with no allocation
+(`runtime/limits`, `duck-limits`): a grid map over several joints with the stricter-neighbour rule, a two-joint
+table, a rule over two limbs, and `settle`, which keeps as much of a move as the rules allow and names what it held.
+It decides exactly as the firmware's C++ does on 4,000 shared cases. It is written to move into rigrs; what is
+specific to a biped's legs is small (the joint order of a leg and the sign flip of the right one).
+
 ### 4. Only Pico firmware, and no way into an existing C or C++ firmware
 
 The reference firmware and its support crates target the RP2040 and RP2350. The UNO Q's microcontroller is an
@@ -153,7 +159,12 @@ that does not assume the emulator.
 2. **Move our tested C++ logic into rigrs crates** as each is needed: the Feetech protocol (item 2), then the
    combination limits and fault handling (item 3), checked against the same test vectors our C++ tests use.
 3. **Keep the microcontroller firmware in C++** until the robot walks. Then try item 4's static-library route so the
-   limits and safety code are one Rust implementation on both processors.
+   limits and safety code are one Rust implementation on both processors. The first piece is ready for it: the leg
+   rules build for the UNO Q's microcontroller (`thumbv8m.main-none-eabihf`). Not tried: linking a Rust static
+   library into an Arduino sketch on the Zephyr core. Others have gone the other way, a whole Zephyr application in
+   Rust with a Rust port of the board's RPC bridge
+   ([arduino-libraries-rust](https://www.hackster.io/news/taras-woronjanski-turns-to-the-zephyr-rtos-to-make-the-arduino-uno-q-a-little-rusty-10125eac7167));
+   that route leaves App Lab's sketch flow and is not tested here either.
 
 Until an item lands upstream, the Nano carries the code in its own runtime crate and marks it as destined for rigrs.
 

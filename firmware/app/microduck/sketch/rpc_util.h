@@ -53,7 +53,9 @@ inline void put_status(const duck::Status& s, int32_t* out) {
 }
 
 // A control loop owns the bus (the robot or a bench servo is armed): the raw bus tools are refused.
-inline bool bus_owned() { return g_ctl.status().mode == duck::Mode::kArmed || g_bench.armed(); }
+inline bool bus_owned() {
+  return g_ctl.status().mode == duck::Mode::kArmed || g_bench.armed() || g_bench2.armed();
+}
 
 // A servo ID that is not the broadcast.
 inline bool valid_id(int32_t id) { return id >= 0 && id <= 253; }

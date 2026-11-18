@@ -31,7 +31,8 @@
 
 // 1 = read the BNO086 over Qwiic (Wire1, address 0x4B) with the SparkFun
 //     BNO08x library ("SparkFun BNO08x Cortex Based IMU"; add it to
-//     sketch.yaml). UNTESTED on hardware. 0 = no IMU: arming is refused
+//     sketch.yaml; the board needs a network to fetch it). Runs on the
+//     board since 2026-11-18. 0 = no IMU: arming is refused
 //     unless config/robot.json says the IMU is not required.
 #ifndef DUCK_IMU_BNO08X
 #define DUCK_IMU_BNO08X 0
