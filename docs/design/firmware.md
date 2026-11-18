@@ -115,6 +115,9 @@ Call them from Python with `duck_client.Duck(Bridge)`, or directly: `Bridge.call
 | `duck_joints` / `duck_setpoints` | 15 angles, degrees x10 | measured (-32768 = no answer) / commanded after the safety layer |
 | `duck_health` | 15 x (load 0.1 %, voltage 0.1 V, temperature degC) | |
 | `duck_ping(id)`, `duck_scan(first, last)`, `duck_read(id, addr, n)` | bus result / IDs found / register bytes | read-only bench tools; refused while armed |
+| `duck_bus_raw(id)` | bytes received, then up to 24 of them | sends a ping and returns whatever arrives on the servo port, unparsed: tells a dead wire or a wrong adapter jumper from a silent servo |
+| `duck_bus_baud(baud)` | the speed now in use | bench only: reopens the servo port at another speed, to look for a servo that is not at the configured one; not kept across a restart |
+| `duck_bench_arm(key, joint)`, `duck_bench_step(deg x10)`, `duck_bench_disarm`, and the same three as `duck_bench2_*` | result / 12 integers (mode, fault, joint, position, speed, load, voltage, temperature, read time, setpoint) / 0 | bench build only (`DUCK_BENCH_MOTION 1`): one servo moved on its own, and a second beside it. Each goes through its joint's limits, the speed limit and the fault checks; when either stops, every servo's torque goes off |
 | `duck_imu_diag` | IMU support built, answer at 0x4A, answer at 0x4B, started, gyro on, gravity reports, gyro reports, other reports, resets, start stage, start attempts | the two address probes are made when called; start stage 1 = the library's start failed, 2 = gravity refused, 3 = started |
 | `duck_imu_raw` | age of the gravity sample (ms), up x1000 (x, y, z), age of the gyro sample (ms), gyro deg/s x10 (x, y, z) | the sensor's own axes, before the mounting matrix: this is what the matrix is worked out from |
 | `duck_imu_probe` | reset accepted, reads made, ms, then (length word, channel) per read | only when the IMU answers but will not start: soft-resets it and lists what it sends; refused while armed |
@@ -146,7 +149,7 @@ Table Explanation", and the aifitlab "FEETECH SCSCL Servo - Memory Table Analysi
 | Goal speed 0 means "as fast as possible" | **Unconfirmed** (the "phase" register has a bit that changes this) |
 | 3.41 steps per degree (1024 steps over 300 deg) | **Unconfirmed** on a servo |
 | Factory angle limits 20..1003 | Waveshare table. Matters for head yaw: +-150 deg needs steps 0..1023 with the zero exactly mid-range, so +-150 is not reachable with factory limits (about +-144) |
-| Whether the Waveshare adapter echoes transmitted bytes; whether it works when powered at 5 V | Through its USB port (jumper B) it does not echo and it works at 5.3 V (read on a servo, 2026-11-18, below). Through its UART header (jumper A) with the UNO Q: **not yet working**, cause not found |
+| Whether the Waveshare adapter echoes transmitted bytes; whether it works when powered at 5 V | Through its USB port (jumper B) it does not echo and it works at 5.3 V (read on a servo, 2026-11-18, below). Through its UART header to the UNO Q's D0 / D1 it works too, at 5.2 V, **only with the jumper on A** (on B, where it must be for USB, the header is disconnected and nothing at all comes back): 200 of 200 pings and 200 of 200 reads through the firmware on 2026-11-19, no echo of the bytes sent |
 
 **Read from a real SCS0009 on 2026-11-18** (one servo, factory state, through the adapter's USB port from a PC, four
 AA cells; read instructions only, the whole table 0..69):
@@ -168,7 +171,10 @@ Turned by hand with a horn on, torque off, the same day (position, speed and loa
 - **The output turns all the way round by hand; there is no end stop.** Position runs 0..1023 over the sensing
   arc and rises steadily in one direction. Outside that arc (the rest of the turn) the position register returns
   **noise between about 540 and 730**, which looks like a plausible mid-range angle, with the speed register at 0
-  or garbage. A joint must never be allowed into that gap: nothing in the reading says it is there. In the robot the
+  or garbage. A joint must never be allowed into that gap: nothing in a single reading says it is there. The
+  firmware therefore latches a **position jump** fault, torque off, when a position changes between two reads by
+  more than a servo can move (`faults.position_jump_*` in `robot.json`: 2500 steps/s plus 8 steps); on the noise
+  recorded from the servo it trips within five reads. In the robot the
   parts keep every joint well inside the arc except head yaw, whose +-150 degree limit is the whole arc (and is
   already out of reach with the factory limits 20..1003, about +-144).
 - Present speed (58) is in steps per second with the direction in bit 15: 154 steps/s by the change of position
@@ -187,6 +193,17 @@ at 5.3 V, sweeps of +-205 steps about 512 at goal speeds from 150 to 1350 steps/
 - The AA pack sagged from 5.3 V to 4.3 V in the fast sweeps, and the servo then set the voltage bit in its error
   byte (below its 4.5 V limit) while carrying on. On the robot's regulator this is the brown-out to watch for.
 - No temperature rise (23 to 24 C) in 20 s.
+
+Given a new ID through the firmware's provisioning build on 2026-11-19 (`duck_set_id`, the servo alone on the
+bus):
+
+- The sequence the Feetech library uses works: unlock (48 = 0), write the ID (5), lock (48 = 1) addressed to the new
+  ID. The servo answers under the new ID at once, and the ID is still there after the lock.
+- **A write into the permanent memory is answered late.** With the normal 3 ms reply timeout the firmware gave up on
+  the answer to the ID write and sent the lock while the servo was still busy; the ID had changed, but the call
+  reported "no reply" and the memory was left unlocked. The firmware now waits up to 60 ms for the answers in that
+  sequence; the same call then returns OK and the lock reads 1.
+- The normal build has no such function: `duck_set_id` is "not available" there.
 
 Still unconfirmed after this: steps per degree (no known angle was used), what goal speed 0 does, and anything
 under load.

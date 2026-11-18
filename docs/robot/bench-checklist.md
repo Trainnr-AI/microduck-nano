@@ -29,10 +29,11 @@ are powered.
 **B. One servo on the bench, nothing attached to its horn, default build (cannot move it)**
 
 5. Power the adapter and one servo from a current-limited 5 V supply. Does the adapter work at 5 V at all?
-   (2026-11-18: yes through its USB port, jumper on B, at 5.3 V from four AA cells: the servo answers and its whole
-   memory table reads, [firmware.md](../design/firmware.md). Through the UART header to the UNO Q, jumper on A,
-   nothing came back with RX / TX either way round; `duck_bus_raw` shows what arrives, and a wire from D0 to D1
-   shows the board's own port is fine.)
+   (Yes, on four AA cells at 5.2 to 5.3 V, 2026-11-18 and 19: through its USB port with the jumper on **B**, and
+   through the UART header to D0 / D1 with the jumper on **A**. The jumper is the small cap on three pins beside the
+   letters A and B; in the wrong position the other port is disconnected and nothing comes back at all, which cost a
+   day here. If the servo is silent: `duck_bus_raw` shows every byte that arrives, and a wire from D0 to D1 shows
+   whether the board's own port works.)
 6. `duck_scan` finds the servo (factory ID is usually 1). If every read fails, try `duck_set_echo(true)`.
 7. `duck_read(id, 56, 2)` while turning the horn by hand to two known angles 90 deg apart: confirm 3.41 steps per degree
    and which way the numbers go.
@@ -59,7 +60,9 @@ are powered.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 
-9. Decide the 15 servo IDs; set each servo's ID with only that servo on the bus; label it.
+9. Decide the 15 servo IDs; set each servo's ID with only that servo on the bus; label it. (`duck_set_id(key, old, new)`
+   in the provisioning build; done for one servo, 1 to 2, on 2026-11-19. Read register 5 and 48 back afterwards: the
+   new ID, and 1 for a locked memory.)
 10. Set every servo to mid-range before fitting its horn (ASSEMBLY.md step 0.3), then fill in `zero_step`, `direction`,
     `calibrated` in `robot.json` from readings at the joint's zero pose.
 11. Write and read back the angle limits and the protection settings on every servo (JOINT_LIMITS.md sections 1 and 3).

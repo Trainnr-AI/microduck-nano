@@ -4,7 +4,7 @@ Status on 2026-11-18. Ordered by what blocks what, not by date.
 
 ## Works today
 
-- **Firmware on a bare Arduino UNO Q.** Builds, passes 24 host tests, runs on the board on both the shipped and the
+- **Firmware on a bare Arduino UNO Q.** Builds, passes 26 host tests, runs on the board on both the shipped and the
   updated board software. The Linux side and the microcontroller talk; arming is refused. No servo has been driven.
 - **Runtime in Rust on rigrs** ([`runtime/`](../../runtime/)). Reads the firmware's state through the board's router
   and runs a dry-run control loop with rigrs guards. Measured on the board: a tick's exchange with the microcontroller took 18 ms

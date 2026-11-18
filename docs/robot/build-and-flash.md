@@ -6,8 +6,8 @@ Getting the firmware onto an Arduino UNO Q, and the wiring it assumes. Paths are
 
 | Connection | UNO Q | Notes |
 |---|---|---|
-| Servo adapter (Waveshare Bus Servo Adapter (A), jumper on A) | D1 (TX, PB6), D0 (RX, PB7), GND | 3.3 V logic, 1 Mbaud. Waveshare's page says to wire RX to RX and TX to TX: check the silkscreen. Never connect the servo supply to a UNO Q pin |
-| BNO086 | Qwiic connector | 3.3 V only; I2C address 0x4B; this is `Wire1` in a sketch, not `Wire`. The firmware runs this bus at 100 kHz: at 400 kHz the sensor's start-up fails without its interrupt line (`imu.cpp`) |
+| Servo adapter (Waveshare Bus Servo Adapter (A), **jumper on A**: on B only its USB port reaches the servos) | D1 (TX, PB6), D0 (RX, PB7), GND | 3.3 V logic, 1 Mbaud. Wire the adapter's pin marked RX to D0 (the board's RX) and the one marked TX to D1 (the board's TX), as Waveshare's page says (RX to RX, TX to TX); this is the wiring that works here (2026-11-19). Never connect the servo supply to a UNO Q pin |
+| BNO086 | Qwiic connector | 3.3 V only; I2C address 0x4B; this is `Wire1` in a sketch, not `Wire`. The firmware runs this bus at 100 kHz: at 400 kHz the sensor's start-up fails without its interrupt line. It also resets the bus by hand at start-up, because a firmware reload can leave the sensor stuck mid-transfer (`imu.cpp`) |
 | Camera | USB-C | See the host-mode note below |
 | Power | VIN | 7 to 24 V per Arduino's power specification; a 3S LiPo is inside that |
 

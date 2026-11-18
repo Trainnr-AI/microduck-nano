@@ -41,3 +41,14 @@ What it measured is in [firmware.md](../../docs/design/firmware.md).
 `imu_follow.py`, 2026-11-18, same servo and cells, the IMU on Qwiic and the adapter on the UNO Q's USB port: 1,500
 ticks in 30 s (50 a second), the horn followed the IMU from -45 to +45 degrees (positions 360 to 662), settled within
 4 steps of the target at rest, lowest supply 5.1 V, no error from the servo.
+
+`bench_follow.py` with two joints, 2026-11-19, the first try with two servos through the firmware's bench mode (IDs 1 and 2 on the
+adapter's UART header, the same part-used AA cells): both armed without a jump, and three ticks later the firmware
+stopped both with an under-voltage fault. The pack fell from 5.1 V to 3.9 V the moment two servos drew current.
+Nothing was wrong with the firmware or the servos; two servos need a supply that holds its voltage.
+
+`bench_follow.py` with one joint, 2026-11-19 (`results/imu-follow-firmware-20261119.csv.gz`): the servo with ID 2
+as `left_ankle`, through the firmware's bench mode, goal speed 300 steps/s, the same AA cells. 1,500 ticks in 30 s;
+the firmware first brought the joint from 121 degrees to its 90 degree limit, then it followed the IMU's tilt between
+-29 and +45 degrees; lowest supply 5.0 V, peak drive 30 %, 23 C. With the firmware's default goal speed of 0 ("as
+fast as it can") the same servo pulled the pack down to 3.9 V on its first move and the firmware stopped it.
