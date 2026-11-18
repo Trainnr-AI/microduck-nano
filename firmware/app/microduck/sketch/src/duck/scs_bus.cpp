@@ -66,6 +66,15 @@ BusError ScsBus::ping(uint8_t id, uint8_t* error) {
   return e;
 }
 
+size_t ScsBus::raw_ping(uint8_t id, uint8_t* rx, size_t cap, uint32_t wait_ms) {
+  if (id >= kBroadcastId || rx == nullptr) return 0;
+  uint8_t pkt[8];
+  const size_t n = build_ping(id, pkt, sizeof(pkt));
+  io_.discard_input();
+  io_.write(pkt, n);
+  return io_.read(rx, cap, wait_ms);
+}
+
 BusError ScsBus::read(uint8_t id, uint8_t addr, uint8_t* data, uint8_t n, uint8_t* error) {
   if (id >= kBroadcastId || n == 0 || n > sizeof(Reply().params)) return BusError::kBadArg;
   uint8_t pkt[8];

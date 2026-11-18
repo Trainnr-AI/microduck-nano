@@ -44,10 +44,13 @@ void setup() {
   status_display_begin();
 
   DUCK_SERVO_SERIAL.begin(g_config.servo.baud);
-  g_imu_present = imu_begin();
 
   Bridge.begin(DUCK_BRIDGE_BAUD);
   rpc_register();
+  // The IMU starts after the Bridge. The IMU library prints through `Serial` when it finds the sensor, and on this
+  // board `Serial` is the Bridge's monitor: printed before Bridge.begin(), the call never returned and the firmware's
+  // functions never appeared on the Linux side (seen on 2026-11-18, the first start with a BNO086 attached).
+  g_imu_present = imu_begin();
   g_next_tick_ms = millis();
 }
 

@@ -73,6 +73,9 @@ class ScsBus {
 
   // --- always allowed ---
   BusError ping(uint8_t id, uint8_t* error = nullptr);
+  // Bench diagnostic: sends a PING to `id` and returns every byte that arrives within wait_ms, as it came (an echo
+  // of the six bytes sent, a reply, noise, or nothing). Tells a dead wire from a silent servo.
+  size_t raw_ping(uint8_t id, uint8_t* rx, size_t cap, uint32_t wait_ms);
   BusError read(uint8_t id, uint8_t addr, uint8_t* data, uint8_t n, uint8_t* error = nullptr);
   BusError read_feedback(uint8_t id, Feedback* fb);  // position .. temperature in one read
   BusError read_angle_limits(uint8_t id, uint16_t* min_step, uint16_t* max_step);
