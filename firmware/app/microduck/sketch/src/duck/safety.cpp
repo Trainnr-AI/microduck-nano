@@ -22,25 +22,94 @@ void bracket(const float* grid, int n, float v, int* lo, int* hi) {
 
 }  // namespace
 
-bool hip_pose_allowed(const HipMapConfig& m, float pitch, float roll, float yaw, float knee) {
-  if (!(pitch == pitch && roll == roll && yaw == yaw && knee == knee)) return false;
-  int p0, p1, r0, r1, y0, y1, k0, k1;
+LegPose leg_pose(const float q[kNumJoints], bool right) {
+  if (right) return {-q[kRHipYaw], -q[kRHipRoll], -q[kRHipPitch], -q[kRKnee], -q[kRAnkle]};
+  return {q[kLHipYaw], q[kLHipRoll], q[kLHipPitch], q[kLKnee], q[kLAnkle]};
+}
+
+bool hip_pose_allowed(const HipMapConfig& m, bool right, float pitch, float roll, float yaw, float knee,
+                      float ankle) {
+  if (!(pitch == pitch && roll == roll && yaw == yaw && knee == knee && ankle == ankle)) return false;
+  int p0, p1, r0, r1, y0, y1, k0, k1, a0, a1;
   bracket(m.pitch, kHipPitchN, pitch, &p0, &p1);
   bracket(m.roll, kHipRollN, roll, &r0, &r1);
   bracket(m.yaw, kHipYawN, yaw, &y0, &y1);
   bracket(m.knee, kHipKneeN, knee, &k0, &k1);
-  for (int p = p0; p <= p1; ++p)
-    for (int y = y0; y <= y1; ++y)
-      for (int k = k0; k <= k1; ++k)
-        for (int r = r0; r <= r1; ++r)
-          if (m.collides[p][y][k] & (1u << r)) return false;
+  bracket(m.ankle, kHipAnkleN, ankle, &a0, &a1);
+  const auto& leg = m.collides[right ? 1 : 0];
+  for (int a = a0; a <= a1; ++a)
+    for (int p = p0; p <= p1; ++p)
+      for (int y = y0; y <= y1; ++y)
+        for (int k = k0; k <= k1; ++k)
+          for (int r = r0; r <= r1; ++r)
+            if (leg[a][p][y][k] & (1u << r)) return false;
   return true;
 }
 
-bool leg_allowed(const HipMapConfig& map, const float q[kNumJoints], bool right) {
-  if (right) return hip_pose_allowed(map, -q[kRHipPitch], -q[kRHipRoll], -q[kRHipYaw], -q[kRKnee]);
-  return hip_pose_allowed(map, q[kLHipPitch], q[kLHipRoll], q[kLHipYaw], q[kLKnee]);
+bool knee_ankle_allowed(const KneeAnkleConfig& c, float knee, float ankle) {
+  if (!(knee == knee && ankle == ankle)) return false;
+  if (knee <= c.knee_over_deg) return true;
+  for (int i = 0; i < kKneeAnkleN; ++i) {
+    if (knee <= c.knee[i]) return ankle >= c.ankle_min[i];
+  }
+  return ankle >= c.ankle_min[kKneeAnkleN - 1];
 }
+
+bool leg_allowed(const RobotConfig& cfg, const float q[kNumJoints], bool right) {
+  const LegPose l = leg_pose(q, right);
+  return knee_ankle_allowed(cfg.knee_ankle, l.knee, l.ankle) &&
+         hip_pose_allowed(cfg.hip, right, l.pitch, l.roll, l.yaw, l.knee, l.ankle);
+}
+
+bool both_legs_allowed(const BothLegsConfig& c, const float q[kNumJoints]) {
+  const LegPose l = leg_pose(q, false), r = leg_pose(q, true);
+  if (!(l.yaw == l.yaw && r.yaw == r.yaw && l.pitch == l.pitch && r.pitch == r.pitch && l.roll == l.roll &&
+        r.roll == r.roll)) {
+    return false;
+  }
+  if (!(l.yaw > c.yaw_out_over_deg && r.yaw > c.yaw_out_over_deg)) return true;
+  if (l.pitch < c.pitch_forward_of_deg && r.pitch < c.pitch_forward_of_deg) return false;
+  const float roll_in = l.roll < r.roll ? l.roll : r.roll;
+  return !(l.pitch < c.band_pitch_forward_of_deg && r.pitch < c.band_pitch_forward_of_deg &&
+           roll_in < c.band_roll_in_past_deg);
+}
+
+namespace {
+
+// The five joints of a leg follow each other in JointIndex, hip yaw first.
+static_assert(kLHipRoll == kLHipYaw + 1 && kLHipPitch == kLHipYaw + 2 && kLKnee == kLHipYaw + 3 &&
+                  kLAnkle == kLHipYaw + 4 && kRHipRoll == kRHipYaw + 1 && kRHipPitch == kRHipYaw + 2 &&
+                  kRKnee == kRHipYaw + 3 && kRAnkle == kRHipYaw + 4,
+              "JointIndex order changed: check the leg rules");
+constexpr int kLegJoints = 5;
+constexpr int kAnkleOffset = 4;
+
+void hold(float next[kNumJoints], const float prev[kNumJoints], int first, int count) {
+  for (int i = first; i < first + count; ++i) next[i] = prev[i];
+}
+
+// Make one leg's next pose an allowed one, changing as little as possible: all of it; else the ankle held; else
+// the hip and knee held while the ankle moves; else the whole leg where it is. Returns the flags to raise.
+uint16_t settle_leg(const RobotConfig& cfg, const float prev[kNumJoints], float next[kNumJoints], bool right) {
+  if (leg_allowed(cfg, next, right)) return 0;
+  const int first = right ? kRHipYaw : kLHipYaw;
+  const LegPose wanted = leg_pose(next, right);
+  uint16_t flags = right ? kFlagLegRight : kFlagLegLeft;
+  if (!knee_ankle_allowed(cfg.knee_ankle, wanted.knee, wanted.ankle)) flags |= kFlagKneeAnkle;
+
+  float trial[kNumJoints];
+  for (int i = 0; i < kNumJoints; ++i) trial[i] = next[i];
+  trial[first + kAnkleOffset] = prev[first + kAnkleOffset];
+  if (!leg_allowed(cfg, trial, right)) {
+    trial[first + kAnkleOffset] = next[first + kAnkleOffset];
+    hold(trial, prev, first, kAnkleOffset);
+    if (!leg_allowed(cfg, trial, right)) hold(trial, prev, first, kLegJoints);
+  }
+  for (int i = first; i < first + kLegJoints; ++i) next[i] = trial[i];
+  return flags;
+}
+
+}  // namespace
 
 bool head_interlock(const HeadInterlockConfig& c, float prev_yaw, float prev_roll, float* yaw, float* roll) {
   float win = c.yaw_window_deg - c.yaw_margin_deg;
@@ -86,6 +155,18 @@ float rate_limit(const JointConfig& j, float setpoint, float target, float dt_s,
   return setpoint + d;
 }
 
+uint16_t settle_legs(const RobotConfig& cfg, const float prev[kNumJoints], float next[kNumJoints]) {
+  uint16_t flags = settle_leg(cfg, prev, next, false);
+  flags |= settle_leg(cfg, prev, next, true);
+  // Each leg is now where its own rules allow. If the two together are not allowed, both stay where they are.
+  if (!both_legs_allowed(cfg.both_legs, next)) {
+    hold(next, prev, kLHipYaw, kLegJoints);
+    hold(next, prev, kRHipYaw, kLegJoints);
+    flags |= kFlagBothLegs;
+  }
+  return flags;
+}
+
 void SafetyFilter::reset(const float current[kNumJoints]) {
   for (int i = 0; i < kNumJoints; ++i) q_[i] = (current[i] == current[i]) ? current[i] : 0.0f;
 }
@@ -109,24 +190,7 @@ uint16_t SafetyFilter::step(const float target[kNumJoints], float dt_s, bool che
     flags |= kFlagHeadInterlock;
   }
 
-  if (!checked_path) {
-    // A leg whose next pose is outside the map stays where it is (all four
-    // mapped joints; the ankle is not part of the map).
-    if (!leg_allowed(cfg_.hip, next, false)) {
-      next[kLHipYaw] = q_[kLHipYaw];
-      next[kLHipRoll] = q_[kLHipRoll];
-      next[kLHipPitch] = q_[kLHipPitch];
-      next[kLKnee] = q_[kLKnee];
-      flags |= kFlagHipMapLeft;
-    }
-    if (!leg_allowed(cfg_.hip, next, true)) {
-      next[kRHipYaw] = q_[kRHipYaw];
-      next[kRHipRoll] = q_[kRHipRoll];
-      next[kRHipPitch] = q_[kRHipPitch];
-      next[kRKnee] = q_[kRKnee];
-      flags |= kFlagHipMapRight;
-    }
-  }
+  if (!checked_path) flags |= settle_legs(cfg_, q_, next);
 
   for (int i = 0; i < kNumJoints; ++i) {
     q_[i] = next[i];

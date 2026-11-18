@@ -1,7 +1,7 @@
 {
  "_about": [
-  "Single data file for every robot-specific number the firmware uses. All values are PROVISIONAL: they come from a",
-  "design that is still under review and from public servo documentation, and none has been confirmed on a real robot.",
+  "Single data file for every robot-specific number the firmware uses. The joint limits and the leg and head rules",
+  "come from the design, closed for the first build on 2026-11-18 (tools/import_design.py); the servo numbers come from public documentation. None has been confirmed on a real robot.",
   "After editing, run tools/gen_config.py to regenerate app/microduck/sketch/src/duck/robot_config_data.h.",
   "Angles are degrees from each joint's zero (the model's rest pose), signs as in the MJCF. Joint order is the MJCF actuator order, beak last."
  ],
@@ -32,7 +32,7 @@
    "direction": 1,
    "calibrated": false,
    "min_deg": -12.0,
-   "max_deg": 19.5,
+   "max_deg": 18.5,
    "max_speed_dps": 180.0
   },
   {
@@ -61,7 +61,7 @@
    "zero_step": 512,
    "direction": 1,
    "calibrated": false,
-   "min_deg": -86.0,
+   "min_deg": -85.0,
    "max_deg": 90.0,
    "max_speed_dps": 180.0
   },
@@ -121,7 +121,7 @@
    "zero_step": 512,
    "direction": 1,
    "calibrated": false,
-   "min_deg": -19.5,
+   "min_deg": -18.5,
    "max_deg": 12.0,
    "max_speed_dps": 180.0
   },
@@ -152,7 +152,7 @@
    "direction": 1,
    "calibrated": false,
    "min_deg": -90.0,
-   "max_deg": 86.0,
+   "max_deg": 85.0,
    "max_speed_dps": 180.0
   },
   {
@@ -203,15 +203,15 @@
  },
  "_poses_note": "STAND from the MJCF STAND key (sim/scene_scs0009_v2.xml), SIT from sim/joint_ranges_v2.json. The beak is not part of a pose.",
  "head_interlock": {
-  "_note": "JOINT_LIMITS.md section 2: roll only while abs(head yaw) <= yaw_window_deg, then abs(roll) <= roll_max_deg; yaw only while abs(roll) <= roll_free_deg. The independent review measured a small collision exactly at yaw 2.5 / roll 15, so both limits are pulled in by a margin. The margins are placeholders until the review gives numbers. REVIEW 2026-11-14: inside the documented window the head base cuts into the head-pitch U (0.16-0.40 mm at yaw -2 to -2.5 with roll -10 to -15); clear at yaw +-1 with roll up to +-15. yaw_margin_deg 1.5 keeps roll to abs(yaw) <= 1.0 until the part is fixed or the boundary is re-measured.",
-  "yaw_window_deg": 2.5,
-  "yaw_margin_deg": 1.5,
+  "_note": "JOINT_LIMITS.md section 2: roll only while abs(head yaw) <= yaw_window_deg, then abs(roll) <= roll_max_deg; yaw only while abs(roll) <= roll_free_deg. yaw_window_deg and roll_free_deg are the design's (tools/import_design.py): at +-1.0 deg of yaw the head base clears the head-pitch U by 0.31 mm or more at every roll; the independent review had found it cutting 0.16-0.40 mm into the U at yaw -2 to -2.5 with roll -10 to -15, inside the window of that time (2.5). The two margins are the firmware's own and are subtracted: roll stops at 15 - 2 = 13 deg, a placeholder until the head is seen moving on the bench.",
+  "yaw_window_deg": 1.0,
+  "yaw_margin_deg": 0.0,
   "roll_max_deg": 15.0,
   "roll_margin_deg": 2.0,
   "roll_free_deg": 1.0
  },
  "hip_map": {
-  "_note": "Allowed left-leg poses (right leg = mirror, all four signs flipped). roll_collides has one character per hip_roll grid value: 1 = collides. Between grid values the firmware uses the stricter neighbour in all four axes. Ankle angle is NOT covered (measured at ankle 0).",
+  "_note": "Hip poses that are not allowed, one map per leg (the right leg is not a mirror of the left), all in the LEFT leg's signs: a right leg's angles are sign-flipped before the lookup. Each row is one hip pitch / hip yaw / knee; 'left' and 'right' hold three groups, for the ankle at -23, 0 and +23 (grid.ankle), with one character per hip_roll grid value: 1 = not allowed (the parts cross, or pass closer than 0.3 mm). Between grid values the firmware uses the stricter neighbour in all five axes. Beyond an axis's end the end value is used: for the ankle that means angles past +-23 are NOT measured together with the hip (the +-23 group is used). Written by tools/import_design.py from the design's data/hip_collision_map.json.",
   "grid": {
    "hip_pitch": [
     -90.0,
@@ -248,6 +248,11 @@
     -45.0,
     0.0,
     68.0
+   ],
+   "ankle": [
+    -23.0,
+    0.0,
+    23.0
    ]
   },
   "rows": [
@@ -255,940 +260,1095 @@
     "hip_pitch": -90.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00001111"
+    "left": "00001111 00000011 00000011",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00001111"
+    "left": "00001111 00000011 00000011",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -90.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "11111111"
+    "left": "00011111 00001111 00001111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000111"
+    "left": "00000011 00000000 00000000",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00001111"
+    "left": "00000111 00000000 00000000",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -75.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "11111111"
+    "left": "00011111 00001111 00001111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000001"
+    "left": "00000001 00000000 00000000",
+    "right": "00000001 00000001 00000001"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000001"
+    "left": "00000011 00000000 00000000",
+    "right": "00000011 00000001 00000001"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -60.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00111111"
+    "left": "00000011 00000001 00000001",
+    "right": "01111111 00111111 00111111"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -45.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000111"
+    "left": "00000000 00000000 00000000",
+    "right": "01111111 00000111 00000111"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -30.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000111 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 11000000",
+    "right": "00000000 00000000 11000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": -15.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "11111000"
+    "left": "11111000 11111000 11111000",
+    "right": "11111000 11111000 11111000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 0.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "11101111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000011"
+    "left": "10110011 10110011 10110011",
+    "right": "10110011 10110011 10110011"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000011"
+    "left": "10000011 10000011 10000011",
+    "right": "10000011 10000011 10000011"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "10000011"
+    "left": "10000011 10000011 10000011",
+    "right": "10000011 10000011 10000011"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000001",
+    "right": "00000000 00000000 00000001"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "10000000"
+    "left": "10000000 10000000 10000000",
+    "right": "10000000 10000000 10000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 15.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "10000000"
+    "left": "10000000 10000000 10000000",
+    "right": "10000000 10000000 10000000"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000111"
+    "left": "11000111 11000111 11000111",
+    "right": "11000111 11000111 11000111"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "10000111"
+    "left": "10000111 10000111 10000111",
+    "right": "10000111 10000111 10000111"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00011111",
+    "right": "00000111 00000111 00011111"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000001"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000001"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "10000001"
+    "left": "10000011 10000011 10000011",
+    "right": "10000011 10000011 10000011"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 30.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "10000000"
+    "left": "10000000 10000000 10000000",
+    "right": "10000000 10000000 10000000"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "01111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "00000111"
+    "left": "00001111 00001111 00001111",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "00000111"
+    "left": "00001111 00001111 00001111",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00011111"
+    "left": "00011111 00011111 00011111",
+    "right": "00011111 00011111 00111111"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000000"
+    "left": "00000001 00000001 00000001",
+    "right": "00000001 00000001 00000001"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 45.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000000"
+    "left": "00000000 00000000 00000000",
+    "right": "00000000 00000000 00000000"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "01111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "11001111"
+    "left": "11001111 11001111 11001111",
+    "right": "11001111 11001111 11001111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00111111"
+    "left": "00111111 00111111 00111111",
+    "right": "00111111 00111111 00111111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00001111"
+    "left": "00001111 00001111 00011111",
+    "right": "00001111 00001111 00011111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000011"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000011"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000001"
+    "left": "00000001 00000001 00000001",
+    "right": "00000001 00000001 00000001"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000001"
+    "left": "00000001 00000001 00000001",
+    "right": "00000001 00000001 00000001"
    },
    {
     "hip_pitch": 60.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000001"
+    "left": "00000001 00000001 00000001",
+    "right": "00000001 00000001 00000001"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "01111111"
+    "left": "01111111 01111111 01111111",
+    "right": "01111111 01111111 01111111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "11001111"
+    "left": "11001111 11001111 11101111",
+    "right": "11001111 11001111 11101111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00011111"
+    "left": "00111111 00111111 00111111",
+    "right": "00111111 00111111 00111111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00111111"
+    "left": "00111111 00111111 00111111",
+    "right": "00111111 00111111 00111111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 75.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000011"
+    "left": "00000011 00000011 00000011",
+    "right": "00000011 00000011 00000011"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": -6.3,
     "knee": -90.0,
-    "roll_collides": "00111111"
+    "left": "00111111 00111111 00111111",
+    "right": "00111111 00111111 00111111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": -6.3,
     "knee": -45.0,
-    "roll_collides": "11111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": -6.3,
     "knee": 0.0,
-    "roll_collides": "01111111"
+    "left": "11111111 11111111 11111111",
+    "right": "11111111 11111111 11111111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": -6.3,
     "knee": 68.0,
-    "roll_collides": "11001111"
+    "left": "11101111 11101111 11101111",
+    "right": "11101111 11101111 11101111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 0.0,
     "knee": -90.0,
-    "roll_collides": "00011111"
+    "left": "00011111 00011111 00011111",
+    "right": "00011111 00011111 00011111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 0.0,
     "knee": -45.0,
-    "roll_collides": "00111111"
+    "left": "00111111 00111111 00111111",
+    "right": "00111111 00111111 00111111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 0.0,
     "knee": 0.0,
-    "roll_collides": "00001111"
+    "left": "00001111 00001111 00011111",
+    "right": "00001111 00001111 00011111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 0.0,
     "knee": 68.0,
-    "roll_collides": "00001111"
+    "left": "00001111 00001111 00001111",
+    "right": "00001111 00001111 00001111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 19.0,
     "knee": -90.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 19.0,
     "knee": -45.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 19.0,
     "knee": 0.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    },
    {
     "hip_pitch": 85.0,
     "hip_yaw": 19.0,
     "knee": 68.0,
-    "roll_collides": "00000111"
+    "left": "00000111 00000111 00000111",
+    "right": "00000111 00000111 00000111"
    }
   ],
-  "source": "left leg vs the rest of the robot, exact parts (tools/blender/leg_motion_check.py), 2026-11-14. Degrees, left-leg signs as in the MJCF (hip pitch + = leg back toward the bay; roll + = out; yaw + = toe out). Ankle at 0, other joints at rest. Right leg = mirror (all four signs flipped; spot-checked 40/40).",
   "review_extra_collisions": [
    {
     "hip_pitch": 0.0,
@@ -1450,7 +1610,49 @@
     "leg": "both"
    }
   ],
-  "_review_note": "Poses the design repo's map marks free but an independent collision sweep of the exact parts (2026-11-14) found touching or colliding; left-leg signs. leg = which leg it was found on. The firmware uses ONE map for both legs (right = mirror), so every entry is blocked for both: the right leg is not an exact mirror (leg forward 45-90 deg with the knee at its 68 deg limit, the right foot meets the neck bearing plate / body frame, up to 6.5 mm), and a few left-leg poses on the edge of the map touch by 0.06-0.48 mm. tools/import_design.py re-applies this list after refreshing the map."
+  "_review_note": "Poses an independent collision sweep of the exact parts (2026-11-14) found touching or colliding while the design's map of that time marked them free; left-leg signs, leg = which leg it was found on. The design's maps of 2026-11-15 contain all of them. tools/import_design.py still applies the list to the leg named, as a second source, and prints how many entries the design's maps did not already have.",
+  "source": "each leg vs the rest of the robot, and both legs together, on the exact parts (tools/blender/clearance_sweep.py, 2026-11-15; replaces the 2026-11-14 left-only volume map). Degrees. 'poses' = LEFT leg, 'right_poses' = RIGHT leg, each in its own MJCF signs (left: hip pitch + = leg back, roll + = out, yaw + = toe out; right: all four signs flipped - the right leg is NOT an exact mirror: see JOINT_LIMITS.md). Ankle 0, other joints at rest. 'both_legs_poses': both legs moved together, 'same' = mirror-symmetric, 'opposite' = one leg's hip pitch mirrored the other way. collides = surfaces cross deeper than 0.05 mm; under_margin = clear but closer than 0.3 mm. 'ankle_pm23_left/right': the same hip grid with the ankle at -23 and +23 (2,496 poses per leg) - ONLY the poses that collide or come within 0.3 mm are stored, every other pose is clear. 'knee_ankle_left/right': knee x ankle at hip rest (13 x 15). Each in its leg's own MJCF signs (2026-11-15)."
+ },
+ "knee_ankle": {
+  "_note": "Knee x ankle, each leg, left signs (JOINT_LIMITS.md section 2): with the knee bent past knee_over_deg the ankle must be at least the second number of the first row whose knee value is at or above the knee angle; otherwise the foot meets the hip's L-bracket or the thigh (up to 6.7 mm). The design's rule, checked by tools/import_design.py against its knee x ankle sweep of each leg.",
+  "knee_over_deg": 30.0,
+  "ankle_min_by_knee_deg": [
+   [
+    40.0,
+    -60.0
+   ],
+   [
+    45.0,
+    -45.0
+   ],
+   [
+    50.0,
+    -45.0
+   ],
+   [
+    55.0,
+    -35.0
+   ],
+   [
+    60.0,
+    -25.0
+   ],
+   [
+    64.0,
+    -10.0
+   ],
+   [
+    68.0,
+    0.0
+   ]
+  ]
+ },
+ "both_legs": {
+  "_note": "Both legs together, left signs for both (JOINT_LIMITS.md section 2): with both hips toed out (hip yaw above yaw_out_over_deg) the legs must not both be forward of pitch_forward_of_deg, or the feet meet (up to 8 mm). The design's rule stops there; its own sweep has the feet crossing by 0.52 mm with both legs at exactly -30, toed out 19 and rolled in -12, so tools/import_design.py adds a band from the data: both forward of band_pitch_forward_of_deg is not allowed either when a hip is rolled in past band_roll_in_past_deg. The sweep moved the two legs as mirror images or with one hip pitch reversed; other pairs of poses are not measured.",
+  "yaw_out_over_deg": 0.0,
+  "pitch_forward_of_deg": -30.0,
+  "band_pitch_forward_of_deg": -15.0,
+  "band_roll_in_past_deg": -8.0
  },
  "motion": {
   "_note": "Sit/stand: straight line in joint space with cosine easing, as simulated (tools/sim/sit_stand_robust.py). planned_trunk_pitch_deg is the trunk pitch the plan expects at equally spaced points of the eased progress from STAND (first) to SIT (last); pitch + = nose up. THE TABLE IS A PLACEHOLDER (a straight ramp to the sim's settled SIT lean of 35.4 deg): export the real curve from the sim's reference_tilt() before a real sit.",

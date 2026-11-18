@@ -27,8 +27,8 @@ RESULTS = ["ok", "firmware built without motion", "bad key", "joint table not ca
            "not at the STAND keyframe (call stand() first)", "facing uphill: sit refused", "busy", "bus error"]
 BUS_ERRORS = ["ok", "no reply", "bad reply", "wrong id", "refused by the safety gate", "bad argument"]
 FLAGS = {0: "non-finite target dropped", 1: "joint limit clamp", 2: "rate limit", 3: "head interlock",
-         4: "hip map (left)", 5: "hip map (right)", 8: "command timeout: holding", 9: "leg targets ignored",
-         10: "IMU stale", 11: "supported stand"}
+         4: "leg rules (left)", 5: "leg rules (right)", 6: "knee x ankle", 7: "both legs",
+         8: "command timeout: holding", 9: "leg targets ignored", 10: "IMU stale", 11: "supported stand"}
 
 
 _MISSING = -32768  # "not measured" in a reply, "no new target" in a request
