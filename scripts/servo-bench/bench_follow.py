@@ -30,11 +30,27 @@ RESULTS = {0: "ok", 1: "firmware built without motion", 3: "joint not calibrated
            6: "fault latched", 11: "busy"}
 
 
+garbled = 0  # calls that came back refused or timed out and were sent again
+
+
 def call(method, *args):
-    reply = router_call.call(method, *args)
-    if reply[2] is not None:
-        raise SystemExit(f"{method} refused: {reply[2]}")
-    return reply[3]
+    """One call to the firmware. A byte is lost on the link between the board's two processors now and then, and
+    the call then comes back refused (a mangled name) or not at all: it is sent again, up to five times. The wait
+    for an answer is short (a call normally takes about 5 ms): the firmware switches a bench servo off after half a
+    second without a command, and two slow waits in a row used that up."""
+    global garbled
+    problem = None
+    for _ in range(5):
+        try:
+            reply = router_call.call(method, *args, timeout=0.08)
+        except OSError as e:
+            problem = repr(e)
+        else:
+            if reply[2] is None:
+                return reply[3]
+            problem = str(reply[2])
+        garbled += 1
+    raise SystemExit(f"{method} failed five times in a row: {problem}")
 
 
 def tilt():
@@ -87,7 +103,8 @@ with open(CSV, "w") as f:
     for r in rows:
         f.write(",".join(f"{v:.2f}" for v in r) + "\n")
 if rows:
-    print(f"{len(rows)} ticks in {rows[-1][0]:.1f} s ({len(rows) / max(rows[-1][0], 1e-9):.0f} a second); log: {CSV}")
+    print(f"{len(rows)} ticks in {rows[-1][0]:.1f} s ({len(rows) / max(rows[-1][0], 1e-9):.0f} a second), "
+          f"{garbled} call(s) sent again; log: {CSV}")
     last = -1
     for r in rows:
         if int(r[0] / 2) != last:

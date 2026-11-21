@@ -3,11 +3,13 @@
 What runs on the robot's Arduino UNO Q: the servo bus, the IMU, joint limits and interlocks, sit / stand, and the link to
 the Linux side.
 
-> **Status: scaffold, bench-safe by default. Nothing here has moved a servo.**
-> The code builds, its unit tests pass on a PC, and the default build has been flashed to a bare UNO Q (no servos, no IMU,
-> no battery) where the Linux side and the microcontroller talk to each other. Every limit, threshold and register address
-> is **provisional**: the mechanical design is still under review and no number has been confirmed on a real servo.
-> There is no walking gait and no policy runtime yet.
+> **Status: bench-safe by default. The whole robot has never been armed.**
+> The code builds and its unit tests pass on a PC. On a UNO Q it runs with the BNO086 IMU, and a bench build has moved
+> one and two SCS0009 servos at a time through the firmware's limits and faults (2026-11-19 to 2026-11-21). All fifteen
+> servos have their IDs; which servo is which joint, the zeros and the directions are not decided, so the default build
+> assigns none and moves nothing. The joint limits and leg rules are the design's as closed on 2026-11-18; the fault
+> thresholds are **provisional**, and what has been measured on a real servo is listed in
+> [firmware.md](../docs/design/firmware.md). There is no walking gait and no policy runtime yet.
 >
 > This robot is meant to be used around children. Read the [safety model](../docs/design/firmware.md#safety-model) and work through the
 > [bench checklist](../docs/robot/bench-checklist.md) in order before
@@ -35,7 +37,7 @@ the Linux side.
 |---|---|
 | [docs/design/firmware.md](../docs/design/firmware.md) | Who does what on the two processors, the safety model, the Bridge functions, servo registers |
 | [docs/robot/build-and-flash.md](../docs/robot/build-and-flash.md) | Reaching the board, building, flashing, wiring, things that went wrong |
-| [docs/robot/bench-checklist.md](../docs/robot/bench-checklist.md) | First steps with real servos, IMU and power (not done yet) |
+| [docs/robot/bench-checklist.md](../docs/robot/bench-checklist.md) | First steps with real servos, IMU and power (partly done; each step says how far) |
 
 ## Tests
 
@@ -71,9 +73,10 @@ so near 512), `direction` (+1 or -1), `calibrated`. Step = zero_step + direction
   repository's `tools/sim/sit_stand_robust.py`) into `motion.planned_trunk_pitch_deg`.
 - The head interlock's roll margin, and every other placeholder in `robot.json`. The review's yaw margin and extra
   hip-map collisions are in; they should be removed again only when the parts are fixed and re-measured.
-- Servo IDs, zeros, directions; IMU mounting matrix.
+- Which servo is which joint (the servos are numbered 1 to 15; `robot.json` assigns none), zeros, directions.
 - Hardware watchdog on the microcontroller, and what the servos should do if it resets.
-- IMU driver is compiled but has never run with a sensor; the gravity report's sign and rate are unverified.
+- The IMU runs (100 gravity and 100 gyro reports a second; axes and signs checked by hand), but its mounting matrix
+  is not set, so the firmware reports it present and not usable for arming.
 - Telemetry for system identification (logging positions and loads at the loop rate) is not built; the Bridge is too
   slow to stream it live, so it will need buffering on the microcontroller or a different link.
 - Camera, behaviour, walking: nothing yet. No gait exists.

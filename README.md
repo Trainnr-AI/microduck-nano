@@ -7,8 +7,9 @@ Microduck is a small duck biped by [Pollen Robotics](https://github.com/pollen-r
 > **Status: design closed for a first build (2026-11-18), nothing printed.** The robot exists as CAD and a simulation
 > model. An [independent review](docs/project/design-review-2026-11-14.md) found problems; the design's answers to
 > them (new limits, a regulator window, no battery protection electronics by the owner's choice) have not been
-> reviewed again, and it is **not yet safe to build for children**. Firmware runs on a bare Arduino UNO Q with motion
-> locked off, and holds the closed design's joint limits and leg rules.
+> reviewed again, and it is **not yet safe to build for children**. Firmware runs on an Arduino UNO Q with the IMU
+> and holds the closed design's joint limits and leg rules; motion is locked off by default, and so far only one
+> or two servos at a time have moved, on a bench. All fifteen servos have their IDs.
 
 ## The robot
 
@@ -30,7 +31,7 @@ The layout follows Pollen Robotics' Microduck repositories.
 
 | Path | What | State |
 |---|---|---|
-| [`firmware/`](firmware/) | What runs on the Arduino UNO Q: servo bus, IMU, limits, interlocks, sit/stand, with host tests | Runs on a bare board; no servo has been driven |
+| [`firmware/`](firmware/) | What runs on the Arduino UNO Q: servo bus, IMU, limits, interlocks, sit/stand, with host tests | Runs on the board with the IMU; servos moved one or two at a time in a bench build, never the whole robot |
 | [`runtime/`](runtime/) | The Linux-side runtime in Rust, on rigrs: talks to the firmware, runs the control loop | Dry-run loop (nothing here arms the robot) and a supervised one-servo bench mode; measured on the board, never with a servo |
 | [`docs/`](docs/README.md) | `robot/` (build and run one), `design/` (how it works), `project/` (roadmap, reviews, measurements) | Start at the index |
 | [`scripts/`](scripts/) | Board benchmarks and the scripts behind each design review | As run |

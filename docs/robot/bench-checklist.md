@@ -61,8 +61,9 @@ are powered.
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 
 9. Decide the 15 servo IDs; set each servo's ID with only that servo on the bus; label it. (`duck_set_id(key, old, new)`
-   in the provisioning build; done for one servo, 1 to 2, on 2026-11-19. Read register 5 and 48 back afterwards: the
-   new ID, and 1 for a locked memory.)
+   in the provisioning build, or `scripts/servo-bench/set_id.py`, which checks first that one servo answers alone.
+   Done for all fifteen: one keeps the factory ID 1, one went to 2 on 2026-11-19, the rest to 3 through 15 on
+   2026-11-21. Read register 5 and 48 back afterwards: the new ID, and 1 for a locked memory.)
 10. Set every servo to mid-range before fitting its horn (ASSEMBLY.md step 0.3), then fill in `zero_step`, `direction`,
     `calibrated` in `robot.json` from readings at the joint's zero pose.
 11. Write and read back the angle limits and the protection settings on every servo (JOINT_LIMITS.md sections 1 and 3).
