@@ -32,7 +32,8 @@ The leg rules exist twice, in the firmware's C++ (`safety.cpp`) and in Rust (`ru
 
 - **Sim, training and deployment go through the trainnr MCP server** (`mcp__trainnr__*`) and are checked in trainnr Studio (`launch_studio`, `screenshot_studio`). Do not script around trainnr with ad-hoc MuJoCo or training code.
 - trainnr project: `microduck-nano` (`use_project` at the start of a session; `describe_project` gives the loop state and the next move). Its data lives under `$TRAINNR_HOME/projects/microduck-nano`, outside this repository.
-- The robot is onboarded in that project from the design's `sim/scene_scs0009_v2.xml` (16 bodies, 15 joints, 14 position actuators; the mouth servo is not actuated in the model). Editing the model means onboarding again, which changes its stamp, and trainnr wants a new name each time ([trainnr#119](https://github.com/Trainnr-AI/trainnr/issues/119)): the name and stamp on each machine are in the handoff. Older entries in the project are earlier revisions.
+- The robot is onboarded in that project as `microduck-nano`, from the design's `sim/scene_scs0009_v2.xml` (16 bodies, 15 joints, 14 position actuators; the mouth servo is not actuated in the model) with `limits.json` beside it, written by `firmware/tools/export_trainnr_limits.py` from the firmware's limits. Editing the model or the limits means onboarding again, which changes its stamp: the stamp on each machine is in the handoff, and `docs/design/sim-to-real.md` has the steps. Entries with a date or `-v2` in their name are earlier revisions.
+- The walk is the task `nano-walk` (family `trainnr/legged-walk`): the model's own actuators, neck and head held, the ten leg joints driven.
 - trainnr's library also carries `microduck` (Pollen's original, XL330 servos) as a reference.
 
 ## Where the robot comes from
@@ -42,7 +43,7 @@ The design source is the separate `agent-cad3d` repository (`Trainnr-AI/agent-ca
 - Simulation model: `projects/xgoduck_scs0009/sim/scene_scs0009_v2.xml` (includes `robot_scs0009_v2.xml`, meshes in `sim/assets/`).
 - Limits: `sim/joint_ranges_v2.json` (servo limits and the rules over several joints) and `data/hip_collision_map.json` (every measured pose). `firmware/tools/import_design.py` brings them into `firmware/config/robot.json` and checks the written rules against the pose data. The design was closed for the first build on 2026-11-18.
 - CAD is edited there (Blender over MCP), not here. This repository receives finished, checked outputs.
-- No SCS0009 actuator model exists yet: it must be identified from real telemetry (`identify_system`) before a trained policy means anything.
+- No SCS0009 actuator model exists yet: it must be identified from a bench recording (`identify_system`, method `servo-bench`) before a trained policy means anything. Until then a walk trains on the model's own actuators, which trainnr records as declared, not identified.
 
 ## Publishing meshes: check first
 

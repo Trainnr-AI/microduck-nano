@@ -9,7 +9,9 @@ Microduck is a small duck biped by [Pollen Robotics](https://github.com/pollen-r
 > them (new limits, a regulator window, no battery protection electronics by the owner's choice) have not been
 > reviewed again, and it is **not yet safe to build for children**. Firmware runs on an Arduino UNO Q with the IMU
 > and holds the closed design's joint limits and leg rules; motion is locked off by default, and so far only one
-> or two servos at a time have moved, on a bench. All fifteen servos have their IDs.
+> or two servos at a time have moved, on a bench. All fifteen servos have their IDs. A first walk has been
+> trained in simulation on a servo model nobody has measured yet: it stays on its feet and does not yet follow the
+> speed it is asked for. No trained policy has run on the robot.
 
 ## The robot
 
