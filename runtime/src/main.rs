@@ -277,7 +277,7 @@ fn policy_time(args: &Args) -> Res {
     let robot = robot(args)?;
     let mut policy = load_policy(args, &robot)?.ok_or("policy-time needs --policy")?;
     let m = policy.manifest();
-    println!("policy `{}`: {} observations -> {POLICY_JOINTS} actions, trained at {} Hz", m.name, m.observation_size(), m.control_hz);
+    println!("policy `{}`: {} observations -> {} actions, trained at {} Hz", m.name, m.observation_size(), m.acting.len(), m.control_hz);
     let (command, period) = (vec![0.0; m.command_size()], 1.0 / m.control_hz);
     let mut times = Vec::with_capacity(args.count as usize);
     for i in 0..args.count {
@@ -327,7 +327,15 @@ fn run(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         args.seconds
     );
     if let Some(p) = &policy {
-        println!("policy `{}`, command {command:?}", p.manifest().name);
+        let m = p.manifest();
+        println!("policy `{}`, command {command:?}", m.name);
+        let held: Vec<&str> = (0..POLICY_JOINTS).filter(|i| !m.acting.contains(i)).filter_map(|i| JOINT_NAMES.get(i).copied()).collect();
+        if !held.is_empty() {
+            println!("  it drives {} joints and holds the others at its stand pose: {}", m.acting.len(), held.join(", "));
+        }
+        if let Some(limits) = &m.limits {
+            println!("  trained against the limits over several joints {limits}; here the firmware holds its own");
+        }
     }
     stop_on_signal(true)?;
     let led = StatusLed::find();

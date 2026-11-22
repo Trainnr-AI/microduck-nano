@@ -22,6 +22,7 @@ the Linux side.
 | `config/robot.json` | **The one data file**: joint limits, servo IDs and zeros (placeholders), poses, interlocks, hip map, balance, fault thresholds. Edit this, not the code |
 | `tools/gen_config.py` | Turns `robot.json` into `robot_config_data.h` for the firmware; prints the servo limits in steps |
 | `tools/import_design.py` | Refreshes the design-derived numbers in `robot.json` from the design repository |
+| `tools/export_trainnr_limits.py` | Writes the limits over several joints as trainnr's `limits.json`, so a walk trained there stops on the poses this firmware refuses; `make -C tests test` compares the two on 60,000 poses |
 | `tools/set-link-speed.sh` | Changes the speed of the link between the board's two processors (run on the board with sudo) |
 | `tools/router_call.py` | Calls a firmware function from a shell on the board (debugging) |
 | `tools/imu_watch.py` | Run on the board: watches the IMU's raw readings while it is moved by hand (up, turning rate, angle turned about each axis) |

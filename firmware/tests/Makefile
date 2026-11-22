@@ -7,9 +7,13 @@ CORE := $(wildcard $(SRC)/duck/*.cpp)
 
 VECTORS := ../../runtime/tests/data/leg_rule_vectors.txt
 
-.PHONY: test leg-vectors clean
-test: build/duck_tests
+.PHONY: test leg-vectors trainnr-limits clean
+test: build/duck_tests trainnr-limits
 	./build/duck_tests
+
+# The limits written for trainnr (tools/export_trainnr_limits.py) against this firmware's verdict on 60000 poses.
+trainnr-limits: build/duck_tests
+	./build/duck_tests --pose-verdicts | python3 ../tools/export_trainnr_limits.py --check-poses -
 
 # The firmware's verdicts on 4000 leg poses, for the Rust implementation of the same rules to be checked against
 # (runtime/tests). Run after any change to the leg rules or to config/robot.json, and commit the file.

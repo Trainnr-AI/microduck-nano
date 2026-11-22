@@ -22,7 +22,8 @@ use tract_onnx::prelude::*;
 use crate::firmware::Sensed;
 use crate::robot::{Robot, JOINT_NAMES};
 
-/// Joints a policy drives: every joint except the beak, in the firmware's order.
+/// Joints a policy knows: every joint except the beak, in the firmware's order. It observes all of them; it drives
+/// all of them, or only those its manifest names (`joints.action_joints`: a walk trained with the head held).
 pub const POLICY_JOINTS: usize = 14;
 
 /// One block of the observation vector, in the order the manifest lists them.
@@ -36,17 +37,19 @@ pub enum Term {
     JointPositions,
     /// Joint speeds, rad/s (one per policy joint).
     JointVelocities,
-    /// The action the policy output on the previous tick (one per policy joint).
+    /// The action the policy output on the previous tick (one per joint it drives).
     LastAction,
     /// The command: walk speed forward (m/s), sideways (m/s) and turn rate (rad/s).
     Command,
 }
 
 impl Term {
-    pub fn size(self) -> usize {
+    /// How many values the term has, for a policy that drives `acting` joints.
+    pub fn size(self, acting: usize) -> usize {
         match self {
             Term::AngularVelocity | Term::ProjectedGravity | Term::Command => 3,
-            Term::JointPositions | Term::JointVelocities | Term::LastAction => POLICY_JOINTS,
+            Term::JointPositions | Term::JointVelocities => POLICY_JOINTS,
+            Term::LastAction => acting,
         }
     }
 }
@@ -68,10 +71,10 @@ pub const DEPLOY_SCHEMA: &str = "trainnr-deploy/1";
 const ACTION_KIND: &str = "joint position target = default_pos + scale * action";
 /// The keys `trainnr-deploy/1` defines, and those it requires. Any other key belongs to a schema this runtime does
 /// not know, so it is refused rather than guessed at, as trainnr's own loader does.
-const KEYS: [&str; 23] = [
+const KEYS: [&str; 24] = [
     "schema", "stamp_of", "policy", "checkpoint", "run", "robot", "actuator", "task", "dr_basis", "fit", "fit_basis",
     "seed", "certificate", "control", "joints", "action", "observations", "onnx", "scene", "commands",
-    "command_basis", "termination", "unitree",
+    "command_basis", "termination", "unitree", "limits",
 ];
 const REQUIRED: [&str; 10] = ["schema", "run", "robot", "control", "joints", "action", "observations", "onnx", "scene", "commands"];
 
@@ -83,12 +86,18 @@ pub struct Manifest {
     pub name: String,
     /// The rate the policy was trained at (one tick per `physics_timestep_s * decimation`); the loop must run at it.
     pub control_hz: f64,
-    /// The joints the outputs drive, in output order.
+    /// The joints the policy knows, in the order of its per-joint observations.
     pub joints: Vec<String>,
+    /// The joints the action drives, as indices into `joints`, in the action's order: all of them, or those
+    /// `joints.action_joints` names. The others are held at the default pose.
+    pub acting: Vec<usize>,
     /// The pose an all-zero action means, radians, one per joint.
     pub default_pose: Vec<f64>,
-    /// target = default pose + scale * action (radians), per joint.
+    /// target = default pose + scale * action (radians), one per acting joint.
     pub action_scale: Vec<f64>,
+    /// The limits over several joints the policy trained against, as the deployment names them (their stamp and
+    /// what training did on a broken one), if it had any. Not enforced here: the firmware holds its own.
+    pub limits: Option<String>,
     /// Actions are clipped to this before scaling, if set.
     pub action_clip: Option<Range>,
     pub observation: Vec<Observation>,
@@ -171,6 +180,36 @@ impl Manifest {
         if numbers(at(d, &["action", "offset"]), "action.offset")? != default_pose {
             return Err(bad(format!("action.offset differs from joints.default_pos; {DEPLOY_SCHEMA} has them equal")));
         }
+        let acting = match at(d, &["joints", "action_joints"]) {
+            Value::Null => (0..joints.len()).collect(),
+            named => {
+                let mut acting = Vec::new();
+                for name in strings(named, "joints.action_joints")? {
+                    let index = joints.iter().position(|j| *j == name)
+                        .ok_or_else(|| bad(format!("joints.action_joints names `{name}`, which joints.policy_order does not have")))?;
+                    if acting.contains(&index) {
+                        return Err(bad(format!("joints.action_joints names `{name}` twice")));
+                    }
+                    acting.push(index);
+                }
+                acting
+            }
+        };
+        if acting.is_empty() {
+            return Err(bad("the action drives no joint"));
+        }
+        let action_scale = numbers(at(d, &["action", "scale"]), "action.scale")?;
+        if action_scale.len() != acting.len() || action_scale.iter().any(|s| !s.is_finite()) {
+            return Err(bad(format!("action.scale has {} values; the action drives {} joints, one finite scale each", action_scale.len(), acting.len())));
+        }
+        let limits = match at(d, &["limits"]) {
+            Value::Null => None,
+            l => Some(format!(
+                "{} ({})",
+                at(l, &["stamp"]).as_str().ok_or_else(|| bad("limits.stamp is missing"))?,
+                at(l, &["mode"]).as_str().ok_or_else(|| bad("limits.mode is missing"))?
+            )),
+        };
         let period_s = at(d, &["control", "physics_timestep_s"]).as_f64().zip(at(d, &["control", "decimation"]).as_f64())
             .map(|(dt, decimation)| dt * decimation)
             .filter(|p| p.is_finite() && *p > 0.0)
@@ -190,8 +229,8 @@ impl Manifest {
                 "command twist" => Term::Command,
                 _ => return Err(bad(format!("observation {name} ({source}) is not one this runtime can measure"))),
             };
-            if term.size() != width {
-                return Err(bad(format!("observation {name} is {width} wide; this robot gives {}", term.size())));
+            if term.size(acting.len()) != width {
+                return Err(bad(format!("observation {name} is {width} wide; this robot gives {}", term.size(acting.len()))));
             }
             if at(o, &["history_length"]).as_u64().unwrap_or(0) != 0 {
                 return Err(bad(format!("observation {name} has a history; this runtime keeps none")));
@@ -213,8 +252,10 @@ impl Manifest {
             name: at(d, &["policy"]).as_str().unwrap_or("unnamed policy").to_string(),
             control_hz: 1.0 / period_s,
             joints,
+            acting,
             default_pose,
-            action_scale: numbers(at(d, &["action", "scale"]), "action.scale")?,
+            action_scale,
+            limits,
             action_clip: clip(at(d, &["action", "clip"]), "action.clip")?,
             observation,
             onnx,
@@ -223,11 +264,11 @@ impl Manifest {
     }
 
     pub fn observation_size(&self) -> usize {
-        self.observation.iter().map(|o| o.term.size()).sum()
+        self.observation.iter().map(|o| o.term.size(self.acting.len())).sum()
     }
 
     pub fn command_size(&self) -> usize {
-        self.observation.iter().filter(|o| o.term == Term::Command).map(|o| o.term.size()).sum()
+        self.observation.iter().filter(|o| o.term == Term::Command).map(|o| o.term.size(self.acting.len())).sum()
     }
 
     /// `command`, if the policy can take it: the right number of values, each inside the range it was trained on
@@ -297,8 +338,8 @@ pub struct Policy {
     manifest: Manifest,
     model: Model,
     default_pose: PerJoint,
-    scale: PerJoint,
-    last_action: [f64; POLICY_JOINTS],
+    /// The clipped, unscaled action of the previous tick, one per acting joint.
+    last_action: Vec<f64>,
     last_positions: Option<[f64; POLICY_JOINTS]>,
     /// How long the last inference took, in microseconds.
     pub last_inference_us: u64,
@@ -312,7 +353,6 @@ impl Policy {
             return Err(bad(format!("the manifest's joints must be the robot's first {POLICY_JOINTS}, in order: {robot_joints:?}")));
         }
         let default_pose = per_joint(&manifest.default_pose, "joints.default_pos")?;
-        let scale = per_joint(&manifest.action_scale, "action.scale")?;
         if !(manifest.control_hz.is_finite() && manifest.control_hz > 0.0) {
             return Err(bad("control.control_hz must be a positive number"));
         }
@@ -338,11 +378,15 @@ impl Policy {
                 manifest.observation_size()
             )));
         }
-        if shape(output) != Some(vec![1, POLICY_JOINTS]) {
-            return Err(bad(format!("the model's output is {:?}, expected [1, {POLICY_JOINTS}]", shape(output))));
+        let acting = manifest.acting.len();
+        if manifest.acting.iter().any(|&i| i >= POLICY_JOINTS) {
+            return Err(bad("the action drives a joint the robot does not have"));
         }
-        let last_action = [0.0; POLICY_JOINTS];
-        Ok(Policy { manifest, model, default_pose, scale, last_action, last_positions: None, last_inference_us: 0 })
+        if shape(output) != Some(vec![1, acting]) {
+            return Err(bad(format!("the model's output is {:?}; the manifest's action drives {acting} joints", shape(output))));
+        }
+        let last_action = vec![0.0; acting];
+        Ok(Policy { manifest, model, default_pose, last_action, last_positions: None, last_inference_us: 0 })
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -351,7 +395,7 @@ impl Policy {
 
     /// Forget the previous tick (after a pause, a fault or a hand-over), so stale speeds and actions are not used.
     pub fn reset(&mut self) {
-        self.last_action = [0.0; POLICY_JOINTS];
+        self.last_action.fill(0.0);
         self.last_positions = None;
     }
 
@@ -380,8 +424,8 @@ impl Policy {
                 }
                 Term::JointPositions => positions.iter().zip(&self.default_pose).map(|(p, d)| p - d).collect(),
                 Term::JointVelocities => velocities.to_vec(),
-                Term::LastAction => self.last_action.to_vec(),
-                Term::Command => command.by_ref().take(o.term.size()).copied().collect(),
+                Term::LastAction => self.last_action.clone(),
+                Term::Command => command.by_ref().take(o.term.size(self.last_action.len())).copied().collect(),
             };
             // As the trainer did: scale, then clip.
             obs.extend(values.iter().zip(&o.scale).map(|(&x, &s)| o.clip.map_or(x * s, |(low, high)| (x * s).clamp(low, high)) as f32));
@@ -393,8 +437,8 @@ impl Policy {
         Ok(obs)
     }
 
-    /// Run the network on an observation and return the raw action.
-    pub fn infer(&mut self, observation: Vec<f32>) -> Result<[f64; POLICY_JOINTS], PolicyError> {
+    /// Run the network on an observation and return the raw action, one value per acting joint.
+    pub fn infer(&mut self, observation: Vec<f32>) -> Result<Vec<f64>, PolicyError> {
         let inference = |e: TractError| PolicyError::Inference(e.to_string());
         let size = observation.len();
         let start = Instant::now();
@@ -404,21 +448,26 @@ impl Policy {
         let plain = first.try_as_plain_ram().map_err(inference)?;
         let values = plain.as_slice::<f32>().map_err(inference)?;
         self.last_inference_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let action: [f32; POLICY_JOINTS] = values
-            .try_into()
-            .ok()
-            .filter(|a: &[f32; POLICY_JOINTS]| a.iter().all(|x| x.is_finite()))
-            .ok_or_else(|| PolicyError::Inference(format!("the action is not {POLICY_JOINTS} finite numbers")))?;
-        Ok(action.map(f64::from))
+        let acting = self.last_action.len();
+        if values.len() != acting || values.iter().any(|x| !x.is_finite()) {
+            return Err(PolicyError::Inference(format!("the action is not {acting} finite numbers")));
+        }
+        Ok(values.iter().copied().map(f64::from).collect())
     }
 
     /// One tick: observe, infer, and turn the action into a target for each of the robot's fifteen joints
-    /// (radians, firmware order). The beak is not driven by the policy and keeps its measured angle.
+    /// (radians, firmware order). A joint the policy knows but does not drive is held at the default pose, as it
+    /// was in training. The beak is not the policy's and keeps its measured angle.
     pub fn act(&mut self, sensed: &Sensed, command: &[f64], period_seconds: f64) -> Result<Vec<f64>, PolicyError> {
         let observation = self.observe(sensed, command, period_seconds)?;
         let action = self.infer(observation)?;
-        let action = action.map(|a| self.manifest.action_clip.map_or(a, |(low, high)| a.clamp(low, high)));
-        let mut targets: Vec<f64> = action.iter().zip(self.default_pose).zip(self.scale).map(|((a, d), s)| d + s * a).collect();
+        let action: Vec<f64> = action.iter().map(|&a| self.manifest.action_clip.map_or(a, |(low, high)| a.clamp(low, high))).collect();
+        let mut targets = self.default_pose.to_vec();
+        for ((&joint, a), s) in self.manifest.acting.iter().zip(&action).zip(&self.manifest.action_scale) {
+            if let Some(target) = targets.get_mut(joint) {
+                *target += s * a;
+            }
+        }
         for extra in sensed.joints.iter().skip(POLICY_JOINTS) {
             targets.push(extra.ok_or(PolicyError::Missing("a joint angle"))?);
         }

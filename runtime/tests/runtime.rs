@@ -797,6 +797,92 @@ fn observation_terms_are_scaled_then_clipped_as_trainnr_specifies() {
     assert!(near(42, 0.0) && near(44, -3.0), "gravity, scaled per value: {:?}", &obs[42..45]);
 }
 
+const TINY_LEGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tiny_policy_legs");
+const TRAINNR_EXPORT_HEAD_HELD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/trainnr_export_head_held.json");
+
+#[test]
+fn a_trainnr_export_with_the_head_held_is_read_as_trainnr_wrote_it() {
+    // deploy.json exactly as trainnr's export_deployment wrote it for a walk declared on a copy of this robot's
+    // model with neck and head pinned (trainnr's own test of its legged-walk family, 10 iterations; the network is
+    // not kept here). The policy observes fourteen joints and drives the ten leg joints.
+    let m = Manifest::load(TRAINNR_EXPORT_HEAD_HELD).expect("trainnr's manifest");
+    assert_eq!(m.joints, JOINT_NAMES[..14].iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert_eq!(m.acting, [0, 1, 2, 3, 4, 9, 10, 11, 12, 13], "the legs, in the action's order");
+    assert_eq!(m.action_scale.len(), 10);
+    assert_eq!(m.observation_size(), 47, "3 + 3 + 14 + 14 + 10 (the last action) + 3");
+    assert_eq!(m.limits.as_deref(), Some("limits@3ac96bead5fa (terminate)"));
+    let all = Manifest::load(TRAINNR_EXPORT).expect("trainnr's manifest");
+    assert_eq!(all.acting, (0..14).collect::<Vec<_>>(), "without action_joints the action drives every joint");
+    assert_eq!(all.limits, None);
+
+    let base: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(TRAINNR_EXPORT_HEAD_HELD).expect("read")).expect("json");
+    let refused = |edit: fn(&mut serde_json::Value)| {
+        let mut d = base.clone();
+        edit(&mut d);
+        Manifest::parse(&d, std::path::Path::new(".")).err().map(|e| e.to_string())
+    };
+    assert_eq!(refused(|_| ()), None);
+    let unknown = refused(|d| d["joints"]["action_joints"][0] = "tail".into()).expect("refused");
+    assert!(unknown.contains("tail"), "{unknown}");
+    let twice = refused(|d| d["joints"]["action_joints"][1] = "left_hip_yaw".into()).expect("refused");
+    assert!(twice.contains("twice"), "{twice}");
+    assert!(refused(|d| d["joints"]["action_joints"] = serde_json::json!([])).is_some(), "a policy that drives nothing");
+    // one scale per acting joint, and the last action as wide as the action
+    assert!(refused(|d| d["action"]["scale"] = serde_json::json!(vec![1.0; 14])).is_some());
+    assert!(refused(|d| d["observations"][4]["width"] = 14.into()).is_some());
+    assert!(refused(|d| d["limits"] = serde_json::json!({"file": "limits.json"})).is_some(), "limits without their stamp");
+}
+
+#[test]
+fn a_policy_that_drives_only_the_legs_holds_the_head_at_its_default_pose() {
+    // The tiny leg network: action = 0.5 * ELU(position of its own joint relative to the default pose) + 0.1.
+    let robot = robot();
+    let stand_neck = 20f64.to_radians();
+    let legs = |edit: fn(&mut serde_json::Value)| {
+        let path = std::path::Path::new(TINY_LEGS).join("deploy.json");
+        let mut d: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("manifest")).expect("json");
+        d["joints"]["default_pos"][5] = 20f64.to_radians().into(); // neck pitch, as in the stand pose
+        d["action"]["offset"][5] = d["joints"]["default_pos"][5].clone();
+        edit(&mut d);
+        Manifest::parse(&d, std::path::Path::new(TINY_LEGS)).expect("a manifest")
+    };
+    let mut policy = Policy::load(legs(|_| ()), &robot).expect("policy");
+    let mut joints = [0.0; 15];
+    joints[0] = 0.2; // left hip yaw: the action's first joint
+    joints[5] = -0.5; // the neck, pushed away from where the policy holds it
+    joints[9] = 0.1; // right hip yaw: the action's sixth joint, the robot's tenth
+    joints[14] = 0.4; // the beak
+    let targets = policy.act(&level(joints), &[0.0; 3], 0.02).expect("act");
+    assert_eq!(targets.len(), 15);
+    let scale = 10f64.to_radians();
+    assert!((targets[0] - scale * (0.5 * 0.2 + 0.1)).abs() < 1e-6);
+    assert!((targets[9] - scale * (0.5 * 0.1 + 0.1)).abs() < 1e-6, "an action lands on its own joint, not the next in line");
+    assert!((targets[13] - scale * 0.1).abs() < 1e-6);
+    assert!((targets[5] - stand_neck).abs() < 1e-12, "the neck is held at the default pose, whatever it reads");
+    for (held, target) in targets.iter().enumerate().take(9).skip(6) {
+        assert_eq!(*target, 0.0, "head joint {held} is held at the default pose");
+    }
+    assert!((targets[14] - 0.4).abs() < 1e-12, "the beak keeps its measured angle");
+
+    // the next observation: fourteen positions and speeds, ten last actions
+    let obs = policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe");
+    assert_eq!(obs.len(), 47);
+    assert!((f64::from(obs[5]) - (-0.5 - stand_neck)).abs() < 1e-6, "the neck is still observed, relative to its default");
+    assert!((f64::from(obs[28]) - 0.2).abs() < 1e-6, "last action of the first acting joint");
+    assert!((f64::from(obs[28 + 5]) - 0.15).abs() < 1e-6, "last action of the sixth acting joint, right hip yaw");
+    assert!((f64::from(obs[40]) + 1.0).abs() < 1e-6, "gravity z when level, after ten last actions");
+    policy.reset();
+    assert_eq!(policy.observe(&level(joints), &[0.0; 3], 0.02).expect("observe")[28], 0.0);
+
+    // a network that outputs ten values cannot be described as driving all fourteen joints
+    let all = legs(|d| {
+        d["joints"].as_object_mut().expect("joints").remove("action_joints");
+        d["action"]["scale"] = serde_json::json!(vec![0.1; 14]);
+        d["observations"][2]["width"] = 14.into();
+    });
+    assert!(matches!(Policy::load(all, &robot), Err(PolicyError::Mismatch(_))));
+}
+
 #[test]
 fn a_command_outside_what_the_policy_was_trained_on_is_refused() {
     let m = Manifest::load(TRAINNR_EXPORT).expect("trainnr's manifest");

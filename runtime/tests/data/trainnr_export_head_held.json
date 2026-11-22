@@ -1,0 +1,295 @@
+{
+ "schema": "trainnr-deploy/1",
+ "stamp_of": "legged policy model_9",
+ "policy": "nano2-limits2-model_9@1047bd3af3e8",
+ "checkpoint": "model_9.pt",
+ "run": "nano2-limits2@31332a294436",
+ "robot": "nano2@a3977d7984c8",
+ "actuator": "nano2-model-actuators@a3977d7984c8",
+ "task": "legged-walk@03367be13336",
+ "dr_basis": "none: the model's own actuators, declared, not identified",
+ "seed": null,
+ "certificate": "nano2-limits2-model_9-cuda-seed1000-n4-pe75757@f5655ac1436e",
+ "control": {
+  "physics_timestep_s": 0.005,
+  "decimation": 4,
+  "control_hz": 50,
+  "episode_length_s": 20.0
+ },
+ "joints": {
+  "policy_order": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "neck_pitch",
+   "head_pitch",
+   "head_yaw",
+   "head_roll",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ],
+  "ctrl_order": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "neck_pitch",
+   "head_pitch",
+   "head_yaw",
+   "head_roll",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ],
+  "action_to_ctrl": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13
+  ],
+  "sdk_order_map": null,
+  "sdk_order_source": null,
+  "stiffness": [
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488,
+   12.9488
+  ],
+  "damping": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "effort_limit": [
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883,
+   0.1883
+  ],
+  "default_pos": [
+   0.0,
+   -0.087266,
+   -0.383972,
+   -0.00494,
+   0.383972,
+   0.349066,
+   0.349066,
+   0.0,
+   0.0,
+   0.0,
+   0.087266,
+   0.383972,
+   0.00494,
+   -0.383972
+  ],
+  "servos": [],
+  "action_joints": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ]
+ },
+ "action": {
+  "kind": "joint position target = default_pos + scale * action",
+  "scale": [
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "offset": [
+   0.0,
+   -0.087266,
+   -0.383972,
+   -0.00494,
+   0.383972,
+   0.349066,
+   0.349066,
+   0.0,
+   0.0,
+   0.0,
+   0.087266,
+   0.383972,
+   0.00494,
+   -0.383972
+  ],
+  "clip": null
+ },
+ "observations": [
+  {
+   "name": "base_ang_vel",
+   "width": 3,
+   "source": "sensor robot/imu_ang_vel",
+   "params": {
+    "sensor_name": "robot/imu_ang_vel"
+   },
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "projected_gravity",
+   "width": 3,
+   "source": "projected_gravity",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "joint_pos",
+   "width": 14,
+   "source": "joint_pos_rel",
+   "params": {
+    "biased": true
+   },
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "joint_vel",
+   "width": 14,
+   "source": "joint_vel_rel",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "actions",
+   "width": 10,
+   "source": "last_action",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "command",
+   "width": 3,
+   "source": "command twist",
+   "params": {
+    "command_name": "twist"
+   },
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  }
+ ],
+ "onnx": {
+  "file": "policy.onnx",
+  "input": "obs",
+  "output": "actions",
+  "input_width": 47,
+  "output_width": 10,
+  "normalization": "folded into the graph",
+  "export_check_max_abs_diff": 9.5367431640625e-07
+ },
+ "scene": {
+  "file": "scene.xml",
+  "meshes": "the robot bundle's assets/, by name (the bundle is the version above)",
+  "terrain": "plane",
+  "floor": {
+   "size": [
+    0.0,
+    0.0,
+    0.01
+   ],
+   "condim": 3,
+   "priority": 0,
+   "friction": [
+    1.0,
+    0.005,
+    0.0001
+   ]
+  }
+ },
+ "commands": {
+  "twist": {
+   "lin_vel_x": [
+    -0.4,
+    0.4
+   ],
+   "lin_vel_y": [
+    -0.3,
+    0.3
+   ],
+   "ang_vel_z": [
+    -1.0,
+    1.0
+   ]
+  }
+ },
+ "command_basis": "the task's declared ranges (no curriculum)",
+ "termination": {
+  "fell_over_deg": 70.0
+ },
+ "limits": {
+  "file": "limits.json",
+  "stamp": "limits@3ac96bead5fa",
+  "mode": "terminate"
+ }
+}

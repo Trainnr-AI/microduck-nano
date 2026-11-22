@@ -1550,8 +1550,85 @@ static int print_leg_vectors() {
   return 0;
 }
 
+// Cases for tools/export_trainnr_limits.py to be checked against (`make -C firmware/tests trainnr-limits`): per
+// line, the fourteen pose joints in JointIndex order (tenths of a degree, own signs) and what the firmware says of
+// that pose, one bit per rule, set when the pose is allowed: 1 left knee x ankle, 2 left hip map, 4 right knee x
+// ankle, 8 right hip map, 16 both legs, 32 head (the interlock leaves the head where it was asked to go from
+// centre). Uniform poses seldom meet an edge, so a third of the joints sit on a value a rule turns at, or a tenth
+// of a degree to either side of one.
+static int print_pose_verdicts() {
+  const RobotConfig& c = kRobotConfig;
+  const float win = c.head.yaw_window_deg - c.head.yaw_margin_deg;
+  const float rmax = c.head.roll_max_deg - c.head.roll_margin_deg;
+  const float head_yaw_edges[] = {win, -win};
+  const float head_roll_edges[] = {c.head.roll_free_deg, -c.head.roll_free_deg, rmax, -rmax};
+  const float yaw_edges[] = {c.both_legs.yaw_out_over_deg};
+  const float roll_edges[] = {c.both_legs.band_roll_in_past_deg};
+  const float pitch_edges[] = {c.both_legs.pitch_forward_of_deg, c.both_legs.band_pitch_forward_of_deg};
+  const float knee_edges[] = {c.knee_ankle.knee_over_deg};
+  struct Edges { const float* v; int n; bool leg; };  // leg: written in the left leg's signs
+  auto edges_of = [&](int joint, int list) -> Edges {
+    const bool right = joint >= kRHipYaw && joint <= kRAnkle;
+    const int part = right ? joint - kRHipYaw : joint - kLHipYaw;  // 0 yaw, 1 roll, 2 pitch, 3 knee, 4 ankle
+    if (joint == kHeadYaw) return {head_yaw_edges, 2, false};
+    if (joint == kHeadRoll) return {head_roll_edges, 4, false};
+    if (joint == kNeckPitch || joint == kHeadPitch) return {nullptr, 0, false};
+    const float* grids[5] = {c.hip.yaw, c.hip.roll, c.hip.pitch, c.hip.knee, c.hip.ankle};
+    const int grid_n[5] = {kHipYawN, kHipRollN, kHipPitchN, kHipKneeN, kHipAnkleN};
+    if (list == 0) return {grids[part], grid_n[part], true};
+    if (part == 0) return {yaw_edges, 1, true};
+    if (part == 1) return {roll_edges, 1, true};
+    if (part == 2) return {pitch_edges, 2, true};
+    if (part == 3) return list == 1 ? Edges{knee_edges, 1, true} : Edges{c.knee_ankle.knee, kKneeAnkleN, true};
+    return {c.knee_ankle.ankle_min, kKneeAnkleN, true};
+  };
+  unsigned seed = 20261122u;
+  auto next = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 8) & 0xFFFFFFu;
+  };
+  printf("# Pose verdicts, written by `duck_tests --pose-verdicts`. See test_main.cpp.\n");
+  for (int n = 0; n < 60000; ++n) {
+    float q[kNumJoints] = {0};
+    int tenths[kNumJoints] = {0};
+    for (int j = 0; j < kBeak; ++j) {
+      const JointConfig& jc = c.joints[j];
+      const int lo = static_cast<int>(lroundf(jc.min_deg * 10.0f)), hi = static_cast<int>(lroundf(jc.max_deg * 10.0f));
+      int k = lo + static_cast<int>(next() % static_cast<unsigned>(hi - lo + 1));
+      // Legs toed out and forward more often than a uniform draw gives, or the both-legs rule is seldom reached.
+      const bool right = j >= kRHipYaw;
+      if (n % 4 == 1 && (j == kLHipYaw || j == kRHipYaw)) k = (right ? -1 : 1) * static_cast<int>(1 + next() % 180);
+      if (n % 4 == 1 && (j == kLHipPitch || j == kRHipPitch)) k = (right ? 1 : -1) * static_cast<int>(next() % 500);
+      if (next() % 3 == 0) {
+        const Edges e = edges_of(j, static_cast<int>(next() % 3));
+        if (e.n > 0) {
+          const float v = e.v[next() % static_cast<unsigned>(e.n)];
+          k = static_cast<int>(lroundf((e.leg && right ? -v : v) * 10.0f)) + static_cast<int>(next() % 3) - 1;
+        }
+      }
+      if (k < lo) k = lo;
+      if (k > hi) k = hi;
+      tenths[j] = k;
+      q[j] = static_cast<float>(k) / 10.0f;
+    }
+    unsigned bits = 0;
+    for (int side = 0; side < 2; ++side) {
+      const LegPose l = leg_pose(q, side == 1);
+      if (knee_ankle_allowed(c.knee_ankle, l.knee, l.ankle)) bits |= 1u << (2 * side);
+      if (hip_pose_allowed(c.hip, side == 1, l.pitch, l.roll, l.yaw, l.knee, l.ankle)) bits |= 2u << (2 * side);
+    }
+    if (both_legs_allowed(c.both_legs, q)) bits |= 16u;
+    float yaw = q[kHeadYaw], roll = q[kHeadRoll];
+    if (!head_interlock(c.head, 0.0f, 0.0f, &yaw, &roll)) bits |= 32u;
+    for (int j = 0; j < kBeak; ++j) printf("%d ", tenths[j]);
+    printf("%u\n", bits);
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--leg-vectors") == 0) return print_leg_vectors();
+  if (argc > 1 && strcmp(argv[1], "--pose-verdicts") == 0) return print_pose_verdicts();
   RUN(test_protocol_packets);
   RUN(test_protocol_parse);
   RUN(test_bus_reads);

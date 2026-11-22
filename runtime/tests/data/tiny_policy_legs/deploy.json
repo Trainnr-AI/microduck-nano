@@ -1,0 +1,256 @@
+{
+ "schema": "trainnr-deploy/1",
+ "policy": "tiny test policy (not trained)",
+ "run": "none (written by make_fixture.py)",
+ "robot": "microduck-nano",
+ "control": {
+  "physics_timestep_s": 0.005,
+  "decimation": 4,
+  "control_hz": 50,
+  "episode_length_s": 20.0
+ },
+ "joints": {
+  "policy_order": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "neck_pitch",
+   "head_pitch",
+   "head_yaw",
+   "head_roll",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ],
+  "ctrl_order": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "neck_pitch",
+   "head_pitch",
+   "head_yaw",
+   "head_roll",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ],
+  "action_to_ctrl": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13
+  ],
+  "default_pos": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "stiffness": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "damping": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "effort_limit": [
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null
+  ],
+  "action_joints": [
+   "left_hip_yaw",
+   "left_hip_roll",
+   "left_hip_pitch",
+   "left_knee",
+   "left_ankle",
+   "right_hip_yaw",
+   "right_hip_roll",
+   "right_hip_pitch",
+   "right_knee",
+   "right_ankle"
+  ]
+ },
+ "action": {
+  "kind": "joint position target = default_pos + scale * action",
+  "scale": [
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295,
+   0.17453292519943295
+  ],
+  "offset": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "clip": [
+   -1.0,
+   1.0
+  ]
+ },
+ "observations": [
+  {
+   "name": "joint_pos",
+   "width": 14,
+   "source": "joint_pos_rel",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "joint_vel",
+   "width": 14,
+   "source": "joint_vel_rel",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "actions",
+   "width": 10,
+   "source": "last_action",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "projected_gravity",
+   "width": 3,
+   "source": "projected_gravity",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "base_ang_vel",
+   "width": 3,
+   "source": "sensor robot/imu_ang_vel",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  },
+  {
+   "name": "command",
+   "width": 3,
+   "source": "command twist",
+   "params": {},
+   "scale": 1.0,
+   "clip": null,
+   "history_length": 0
+  }
+ ],
+ "onnx": {
+  "file": "policy.onnx",
+  "input": "obs",
+  "output": "action",
+  "input_width": 47,
+  "output_width": 10,
+  "normalization": "folded into the graph"
+ },
+ "scene": {
+  "file": "scene.xml"
+ },
+ "commands": {
+  "twist": {
+   "lin_vel_x": [
+    -0.4,
+    0.4
+   ],
+   "lin_vel_y": [
+    -0.3,
+    0.3
+   ],
+   "ang_vel_z": [
+    -1.0,
+    1.0
+   ]
+  }
+ }
+}
