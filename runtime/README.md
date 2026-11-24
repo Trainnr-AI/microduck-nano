@@ -157,8 +157,11 @@ it has been picked up. Tested on a made-up servo in the host tests, and run twic
 (2026-11-24, one SCS0009, four AA cells at 5.7 V): **the hold was felt both times, on the first move the joint
 tried, and the struggle lasted a fifth of a second**, because a servo fighting a hand pulled the cells under the
 firmware's 4.3 V limit and the firmware switched it off, as it should. The first try jumped 12 degrees from side
-to side; the second swept 8 degrees at 240 deg/s and ended the same way. Giving up and calming down have not been
-seen on a servo: that needs a supply that holds its voltage.
+to side; the second swept 8 degrees at 240 deg/s and ended the same way. A third run on
+2026-11-25, with the same cells behind the robot's 5 V regulator, showed the whole of it: held at 11.2 s, four
+bursts with a check after each, given up at 15.4 s, calm again 3 s later. It ended at 31 s on the same
+under-voltage fault (4.2 V at 68 % load, pushing against the hand again), so a supply that holds its voltage is
+still what it needs.
 
 ## Hearing
 
