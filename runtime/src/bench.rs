@@ -64,10 +64,17 @@ pub struct BenchSample {
     pub read: Option<BenchReading>,
 }
 
+/// How long exchanges may fail in a row before a run gives up. The board's internal link garbles a call now and
+/// then while a servo has power; the firmware itself switches the servo off after its command timeout (0.5 s) of
+/// silence, so giving up well before that leaves the stop to this side.
+pub const LINK_PATIENCE: Duration = Duration::from_millis(200);
+
 /// How a bench run went.
 #[derive(Debug, Default)]
 pub struct BenchRun {
     pub samples: Vec<BenchSample>,
+    /// Exchanges that failed and were passed over (no sample for those ticks).
+    pub lost_exchanges: usize,
     /// Why it ended before its time, if it did (a fault, the servo switched off, the link, Ctrl-C).
     pub stopped: Option<String>,
     /// The last state the firmware reported.
@@ -75,7 +82,8 @@ pub struct BenchRun {
 }
 
 /// Drive the armed bench servo: `start + amplitude * excitation(t)` (radians) every `period` for `duration`.
-/// Stops at once if the firmware reports anything but ARMED. Does not disarm: the caller does, whatever happened.
+/// Stops at once if the firmware reports anything but ARMED. A failed exchange costs its tick and no more, until
+/// they have failed for `LINK_PATIENCE` in a row. Does not disarm: the caller does, whatever happened.
 pub fn run<S: Read + Write>(
     bridge: &mut Bridge<S>,
     start: f64,
@@ -88,6 +96,7 @@ pub fn run<S: Read + Write>(
     let begin = Instant::now();
     let mut ticker = Ticker::new(period);
     let seconds = duration.as_secs_f64();
+    let mut failing_since: Option<Instant> = None;
     loop {
         let t = begin.elapsed().as_secs_f64();
         if t > seconds {
@@ -100,10 +109,18 @@ pub fn run<S: Read + Write>(
         let target = start + amplitude * excitation.at(t, seconds);
         let sent_ns = now_ns();
         let bench = match firmware::bench_step(bridge, Some(target)) {
-            Ok(b) => b,
+            Ok(b) => {
+                failing_since = None;
+                b
+            }
             Err(e) => {
-                out.stopped = Some(format!("the link failed: {e}"));
-                break;
+                out.lost_exchanges += 1;
+                if failing_since.get_or_insert_with(Instant::now).elapsed() >= LINK_PATIENCE {
+                    out.stopped = Some(format!("the link failed: {e}"));
+                    break;
+                }
+                ticker.wait();
+                continue;
             }
         };
         out.samples.push(BenchSample { sent_ns, received_ns: now_ns(), target, setpoint: bench.setpoint, read: bench.reading });

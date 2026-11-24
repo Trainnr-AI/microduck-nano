@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use arm::{Guard, Verdict};
@@ -188,6 +189,56 @@ pub fn percentile(sorted: &[u64], p: f64) -> Option<u64> {
     sorted.get(index.min(last)).copied()
 }
 
+/// What the policy is asked to do, set from outside the control loop while it runs: by a microphone, by the
+/// camera. A command can be given for a time only, so that a source which stops (a camera unplugged, its thread
+/// gone) leaves the robot asked for nothing, not walking blind.
+#[derive(Debug, Default)]
+pub struct Direction {
+    asked: Mutex<Option<(Vec<f64>, Option<Instant>)>>,
+}
+
+impl Direction {
+    /// Nothing asked yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask for `command` until told otherwise.
+    pub fn set(&self, command: &[f64]) {
+        self.put(Some((command.to_vec(), None)));
+    }
+
+    /// Ask for `command` for `life` from now; after that nothing, unless it is asked again.
+    pub fn set_for(&self, command: &[f64], life: Duration) {
+        self.put(Some((command.to_vec(), Some(Instant::now() + life))));
+    }
+
+    /// Ask for nothing.
+    pub fn clear(&self) {
+        self.put(None);
+    }
+
+    /// The command of the moment, if there is one and its time has not run out.
+    pub fn now(&self) -> Option<Vec<f64>> {
+        let asked = self.asked.lock().ok()?;
+        asked.as_ref().filter(|(_, until)| until.is_none_or(|t| Instant::now() < t)).map(|(command, _)| command.clone())
+    }
+
+    fn put(&self, asked: Option<(Vec<f64>, Option<Instant>)>) {
+        if let Ok(mut held) = self.asked.lock() {
+            *held = asked;
+        }
+    }
+}
+
+/// This tick's command: the fixed one, or with a `direction` its command of the moment, `rest` when it has none.
+fn asked(direction: Option<&Direction>, fixed: &[f64], rest: &[f64]) -> Vec<f64> {
+    match direction {
+        None => fixed.to_vec(),
+        Some(d) => d.now().filter(|c| c.len() == rest.len()).unwrap_or_else(|| rest.to_vec()),
+    }
+}
+
 /// Run the loop for `duration` at `period`. Without a policy the target is "stay where you are"; with one, the
 /// policy's targets (for `command`) go through the guards. Either way nothing moves unless the firmware is armed.
 ///
@@ -200,9 +251,27 @@ pub fn run<S: Read + Write>(
     period: Duration,
     duration: Duration,
     exchange: Exchange,
-    mut policy: Option<(&mut Policy, &[f64])>,
+    policy: Option<(&mut Policy, &[f64])>,
     sinks: &mut Sinks,
 ) -> LoopStats {
+    run_directed(bridge, robot, period, duration, exchange, policy, None, sinks)
+}
+
+/// [`run`], with what the policy is asked to do decided outside the loop while it runs: every tick takes
+/// `direction`'s command of the moment in place of `command`, and a command of zeros when it has none (or one of
+/// the wrong length).
+#[allow(clippy::too_many_arguments)]
+pub fn run_directed<S: Read + Write>(
+    bridge: &mut Bridge<S>,
+    robot: &Robot,
+    period: Duration,
+    duration: Duration,
+    exchange: Exchange,
+    mut policy: Option<(&mut Policy, &[f64])>,
+    direction: Option<&Direction>,
+    sinks: &mut Sinks,
+) -> LoopStats {
+    let rest = vec![0.0; policy.as_ref().map_or(0, |(_, command)| command.len())];
     let mut guards = Guards::new(robot, period);
     // Checked when the robot file was loaded; if it somehow cannot be built, nothing is ever sent.
     let leg_rules = robot.leg_limits.rules().ok();
@@ -227,7 +296,7 @@ pub fn run<S: Read + Write>(
                         sinks.led.show(Colour::Green);
                         hold()
                     }
-                    Some((policy, command)) => match policy.act(&sensed, command, period.as_secs_f64()) {
+                    Some((policy, command)) => match policy.act(&sensed, &asked(direction, command, &rest), period.as_secs_f64()) {
                         Ok(targets) => {
                             stats.policy_ran += 1;
                             stats.inference_us.push(policy.last_inference_us);

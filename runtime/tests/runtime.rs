@@ -10,12 +10,16 @@ use std::time::Duration;
 use arm::Verdict;
 use duck_runtime::bench::{self, Excitation};
 use duck_runtime::bridge::{Bridge, BridgeError};
-use duck_runtime::control::{self, ChainOutcome, Exchange, Guards, Sinks};
+use duck_runtime::chase::Chase;
+use duck_runtime::control::{self, ChainOutcome, Direction, Exchange, Guards, Sinks};
 use duck_runtime::firmware;
 use duck_runtime::firmware::Sensed;
+use duck_runtime::hear::{self, Heard};
+use duck_runtime::pet::{self, Mood, Pet};
 use duck_runtime::policy::{projected_gravity, Manifest, Policy, PolicyError, Term};
 use duck_runtime::record::{orientation, Recorder};
 use duck_runtime::robot::{Robot, JOINT_NAMES};
+use duck_runtime::see::{self, Chroma, Lens};
 use duck_runtime::status_led::{Colour, StatusLed};
 use rmpv::Value;
 
@@ -721,6 +725,327 @@ fn a_bench_run_stops_when_the_firmware_switches_the_servo_off() {
     let why = run.stopped.expect("stopped");
     assert!(why.contains("FAULT") && why.contains("over-temperature"), "{why}");
     assert_eq!(run.last.map(|b| b.result), Some("fault latched"));
+}
+
+/// The link garbles the third and the tenth call (the method's name arrives wrong, so the sketch does not know
+/// it), then every call from the twentieth on.
+static GARBLED_CALLS: AtomicU32 = AtomicU32::new(0);
+fn garbling_bench(method: &str) -> Option<Value> {
+    match method {
+        "duck_bench_step" => match GARBLED_CALLS.fetch_add(1, Ordering::Relaxed) {
+            2 | 9 | 19.. => None,
+            _ => Some(ints(&[0, 1, 0, 3, 1, 20, 0, 0, 50, 60, 0, 20])),
+        },
+        other => bare_board(other),
+    }
+}
+
+#[test]
+fn a_bench_run_passes_over_one_garbled_call_and_stops_when_the_link_stays_down() {
+    let mut bridge = fake_router(garbling_bench);
+    let run = bench::run(&mut bridge, 0.0, 0.1, Excitation::Steps { period_s: 1.0 }, Duration::from_secs(5), Duration::from_millis(10));
+    assert_eq!(run.samples.len(), 17, "the calls that were answered before the link went down");
+    assert!(run.lost_exchanges > 2, "two passed over, then the ones that ended it: {}", run.lost_exchanges);
+    let why = run.stopped.expect("stopped");
+    assert!(why.contains("the link failed"), "{why}");
+    // well inside the firmware's own 0.5 s of silence
+    assert!(run.lost_exchanges <= 2 + 30, "{} lost: it gave up after {:?}", run.lost_exchanges, bench::LINK_PATIENCE);
+}
+
+// ---------------------------------------------------------------- hearing
+
+/// Made-up sound, 16 kHz: `noise` is the room's hiss (peak amplitude), claps are 30 ms bursts that die away.
+struct Sound {
+    samples: Vec<i16>,
+    seed: u32,
+}
+
+impl Sound {
+    fn new() -> Self {
+        Sound { samples: Vec::new(), seed: 12345 }
+    }
+    fn random(&mut self) -> f64 {
+        self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(self.seed >> 8) / f64::from(1u32 << 24) * 2.0 - 1.0
+    }
+    fn noise(mut self, seconds: f64, amplitude: f64) -> Self {
+        for _ in 0..(seconds * f64::from(hear::RATE)) as usize {
+            let v = self.random() * amplitude;
+            self.samples.push(v as i16);
+        }
+        self
+    }
+    fn clap(mut self, amplitude: f64) -> Self {
+        let n = (0.030 * f64::from(hear::RATE)) as usize;
+        for i in 0..n {
+            let v = self.random() * amplitude * (-(i as f64) / (n as f64) * 5.0).exp();
+            self.samples.push(v as i16);
+        }
+        self
+    }
+    /// Everything `Ears` reports for this sound, with the frame it was reported on.
+    fn heard(&self) -> Vec<(usize, Heard)> {
+        let bytes: Vec<u8> = self.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let (mut out, mut frame) = (Vec::new(), 0);
+        hear::listen(&mut bytes.as_slice(), |_, _, heard| {
+            frame += 1;
+            out.extend(heard.map(|h| (frame, h)));
+            true
+        })
+        .expect("listen");
+        out
+    }
+}
+
+#[test]
+fn loudness_is_measured_against_full_scale() {
+    assert_eq!(hear::level_db(&[0; hear::FRAME]), hear::SILENCE_DB);
+    assert_eq!(hear::level_db(&[]), hear::SILENCE_DB);
+    assert!(hear::level_db(&[i16::MAX; hear::FRAME]).abs() < 1e-9, "a full-scale square wave is 0 dB");
+    let half = hear::level_db(&[i16::MAX / 2; hear::FRAME]);
+    assert!((half + 6.02).abs() < 0.01, "half the amplitude is 6 dB down: {half}");
+}
+
+#[test]
+fn claps_are_counted_in_groups() {
+    let quiet = 30.0; // about -63 dB
+    for n in 1..=3u32 {
+        let mut sound = Sound::new().noise(1.0, quiet);
+        for _ in 0..n {
+            sound = sound.clap(12_000.0).noise(0.3, quiet);
+        }
+        let heard = sound.noise(1.0, quiet).heard();
+        assert_eq!(heard.iter().map(|h| h.1).collect::<Vec<_>>(), vec![Heard::Claps(n)], "{n} clap(s)");
+    }
+    // Two pairs far apart are two groups, each reported about GROUP_GAP after its last clap.
+    let pairs = Sound::new().noise(1.0, quiet).clap(12_000.0).noise(0.3, quiet).clap(12_000.0).noise(2.0, quiet)
+        .clap(12_000.0).noise(0.3, quiet).clap(12_000.0).noise(1.0, quiet);
+    let heard = pairs.heard();
+    assert_eq!(heard.iter().map(|h| h.1).collect::<Vec<_>>(), vec![Heard::Claps(2), Heard::Claps(2)]);
+    let reported_s = heard[0].0 as f64 * hear::FRAME_TIME.as_secs_f64();
+    assert!((1.9..2.1).contains(&reported_s), "the first pair ended at 1.36 s and was reported at {reported_s} s");
+}
+
+#[test]
+fn a_long_loud_sound_is_not_a_clap_and_a_clap_is_still_heard_over_it() {
+    let quiet = 30.0;
+    // A second of something loud (a servo, speech): no clap.
+    let long = Sound::new().noise(1.0, quiet).noise(1.0, 12_000.0).noise(1.0, quiet);
+    assert_eq!(long.heard(), vec![]);
+    // A steady hum 30 dB over the quiet room becomes the room's noise; two loud claps over it are still two claps.
+    let over_hum = Sound::new().noise(1.0, quiet).noise(4.0, 1_000.0).clap(30_000.0).noise(0.3, 1_000.0).clap(30_000.0).noise(1.0, 1_000.0);
+    assert_eq!(over_hum.heard().iter().map(|h| h.1).collect::<Vec<_>>(), vec![Heard::Claps(2)]);
+    // A quiet tap, 10 dB over the room, is not a clap.
+    let tap = Sound::new().noise(1.0, quiet).clap(300.0).noise(1.0, quiet);
+    assert_eq!(tap.heard(), vec![]);
+}
+
+#[test]
+fn a_command_from_outside_the_loop_replaces_the_fixed_one_and_runs_out() {
+    let robot = robot();
+    let period = Duration::from_millis(20);
+    let mut policy = Policy::load(manifest(no_gyro), &robot).expect("policy");
+    // The fixed command is one the policy cannot take: used, it is refused every tick. With a direction it is not
+    // used at all.
+    let fixed = [1e6, 0.0, 0.0];
+    let run = |policy: &mut Policy, direction: Option<&Direction>| {
+        control::run_directed(&mut fake_router(standing_robot), &robot, period, Duration::from_millis(200), Exchange::Step, Some((policy, &fixed)), direction, &mut Sinks::none())
+    };
+    let stats = run(&mut policy, None);
+    assert_eq!((stats.policy_ran, stats.policy_skipped), (0, stats.ticks));
+    // Nothing asked: the policy runs on a command of zeros.
+    let direction = Direction::new();
+    assert_eq!(direction.now(), None);
+    let stats = run(&mut policy, Some(&direction));
+    assert_eq!((stats.policy_ran, stats.policy_skipped), (stats.ticks, 0));
+    // Something asked that the policy cannot take: refused, as the fixed one was. Cleared: it runs again.
+    direction.set(&[0.0, 1e6, 0.0]);
+    let stats = run(&mut policy, Some(&direction));
+    assert_eq!((stats.policy_ran, stats.policy_skipped), (0, stats.ticks));
+    direction.clear();
+    assert_eq!(run(&mut policy, Some(&direction)).policy_skipped, 0);
+    // A command of the wrong length is nothing asked; one given for a time is gone after it.
+    direction.set(&[0.0; 5]);
+    assert_eq!(run(&mut policy, Some(&direction)).policy_skipped, 0);
+    direction.set_for(&[0.1, 0.0, 0.0], Duration::from_millis(30));
+    assert_eq!(direction.now(), Some(vec![0.1, 0.0, 0.0]));
+    thread::sleep(Duration::from_millis(40));
+    assert_eq!(direction.now(), None, "a source that stops leaves nothing asked");
+}
+
+#[test]
+fn chasing_turns_to_face_the_thing_then_walks_to_it_and_stops_within_reach() {
+    let chase = Chase::default();
+    let ranges = [(-0.2, 0.4), (-0.3, 0.3), (-1.0, 1.0)];
+    // Far and dead ahead: all the speed the policy was trained for, no turn.
+    assert_eq!(chase.command(0.0, Some(2.0), &ranges), [0.4, 0.0, 0.0]);
+    // Off to the left: turn left, walk slower; far off to the side: turn on the spot, as fast as the policy may.
+    let [forward, sideways, turn] = chase.command(0.3, Some(2.0), &ranges);
+    assert!(forward > 0.1 && forward < 0.4 && sideways == 0.0 && turn > 0.5, "{forward} {turn}");
+    assert_eq!(chase.command(-1.2, Some(2.0), &ranges), [0.0, 0.0, -1.0]);
+    // Nearer is slower, never backwards; within reach it stops and has caught it.
+    let near = chase.command(0.0, Some(0.2), &ranges)[0];
+    assert!(near > 0.0 && near < 0.2, "{near}");
+    assert_eq!(chase.command(0.2, Some(0.10), &ranges), [0.0, 0.0, 0.0]);
+    assert!(chase.caught(Some(0.10)) && !chase.caught(Some(0.2)) && !chase.caught(None));
+    // A thing of unknown size: its direction is all there is, so it is approached at half speed.
+    assert_eq!(chase.command(0.0, None, &ranges), [0.2, 0.0, 0.0]);
+    // Every command is one the policy can take.
+    for bearing in [-3.0, -0.4, 0.0, 0.4, 3.0] {
+        for distance in [None, Some(0.05), Some(0.3), Some(5.0)] {
+            let command = chase.command(bearing, distance, &ranges);
+            assert!(command.iter().zip(&ranges).all(|(c, (low, high))| low <= c && c <= high), "{command:?}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------- seeing
+
+/// A made-up YUYV frame: a grey room with discs of colour, each (centre x, centre y, radius, U, V).
+fn picture(discs: &[(f64, f64, f64, u8, u8)]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(see::FRAME_BYTES);
+    for y in 0..see::HEIGHT {
+        for pair in 0..see::WIDTH / 2 {
+            let x = (pair * 2) as f64 + 1.0;
+            let disc = discs.iter().find(|d| (x - d.0).hypot(y as f64 + 0.5 - d.1) <= d.2);
+            let (u, v) = disc.map_or((128, 128), |d| (d.3, d.4));
+            frame.extend([120, u, 120, v]);
+        }
+    }
+    frame
+}
+
+#[test]
+fn a_coloured_ball_is_found_where_it_is() {
+    let orange = Chroma::new(90, 190);
+    // A ball 40 px across, left of and above the middle.
+    let frame = picture(&[(100.0, 80.0, 20.0, 92, 186)]);
+    let blob = see::find(&frame, &orange, 12).expect("the ball");
+    assert!((blob.x - 100.0).abs() <= 2.0 && (blob.y - 80.0).abs() <= 2.0, "{blob:?}");
+    assert!((blob.width - 40.0).abs() <= 4.0 && (blob.height - 40.0).abs() <= 4.0, "{blob:?}");
+    assert!((0.7..0.9).contains(&blob.fill()), "a disc fills pi/4 of its box: {}", blob.fill());
+
+    // The camera sees 60 degrees from left to right: the ball is to the left and up, and 0.28 m away if it is 40 mm.
+    let lens = Lens::from_fov(60.0);
+    assert!((lens.focal_px - 277.1).abs() < 0.1);
+    let (left, up) = (lens.bearing(&blob).to_degrees(), lens.elevation(&blob).to_degrees());
+    assert!((left - 12.2).abs() < 0.6 && (up - 8.2).abs() < 0.6, "{left} left, {up} up");
+    assert!((lens.distance(&blob, 0.040) - 0.277).abs() < 0.03);
+    // The same ball held at a known distance measures the lens back.
+    assert!((Lens::from_ball(&blob, 0.040, 0.277).focal_px - lens.focal_px).abs() < 30.0);
+
+    // Dead ahead: no angle either way.
+    let ahead = see::find(&picture(&[(160.0, 120.0, 10.0, 90, 190)]), &orange, 12).expect("the ball");
+    assert!(lens.bearing(&ahead).abs() < 0.01 && lens.elevation(&ahead).abs() < 0.01);
+}
+
+#[test]
+fn only_the_largest_patch_of_the_right_colour_counts() {
+    let orange = Chroma::new(90, 190);
+    // Nothing of that colour: a grey room, a blue ball, a dark patch of the right colour's place.
+    assert_eq!(see::find(&picture(&[]), &orange, 12), None);
+    assert_eq!(see::find(&picture(&[(100.0, 80.0, 20.0, 200, 100)]), &orange, 12), None);
+    // Specks of the colour are not the ball; a small ball and a large one: the large one.
+    assert_eq!(see::find(&picture(&[(40.0, 40.0, 2.0, 90, 190), (300.0, 200.0, 2.0, 90, 190)]), &orange, 12), None);
+    let two = picture(&[(60.0, 60.0, 8.0, 90, 190), (220.0, 150.0, 25.0, 90, 190)]);
+    let blob = see::find(&two, &orange, 12).expect("the large ball");
+    assert!((blob.x - 220.0).abs() <= 2.0 && (blob.y - 150.0).abs() <= 2.0, "{blob:?}");
+    // A frame of another size is not looked at.
+    assert_eq!(see::find(&two[..two.len() - 4], &orange, 12), None);
+    // A ball cut off by the picture's edge still gives its distance from its larger side.
+    let cut = see::find(&picture(&[(0.0, 120.0, 20.0, 90, 190)]), &orange, 12).expect("half a ball");
+    assert!(cut.width < 24.0 && (cut.height - 40.0).abs() <= 4.0, "{cut:?}");
+    assert!((Lens::from_fov(60.0).distance(&cut, 0.040) - 0.277).abs() < 0.03);
+}
+
+#[test]
+fn the_colour_in_the_middle_of_the_picture_is_learnt() {
+    let held = picture(&[(160.0, 120.0, 60.0, 77, 201)]);
+    let colour = see::learn(&held).expect("a colour");
+    assert_eq!((colour.u, colour.v), (77, 201));
+    assert!(colour.strength() > 80.0);
+    assert!(see::learn(&picture(&[])).expect("grey").strength() < 1.0, "a grey wall has no colour to look for");
+    assert!(see::find(&held, &colour, 12).is_some());
+    // Frames come off a stream one after another, and the stream's end is not an error.
+    let two = [held.clone(), picture(&[])].concat();
+    let (mut stream, mut frame) = (&two[..two.len() - 10], Vec::new());
+    assert!(see::read_frame(&mut stream, &mut frame).expect("first"));
+    assert_eq!(frame, held);
+    assert!(!see::read_frame(&mut stream, &mut frame).expect("a cut second frame is the end"));
+}
+
+// ---------------------------------------------------------------- one joint as a pet
+
+/// A made-up servo for the pet: it follows its target with a short lag, unless a hand holds it at `held_at`.
+/// Runs `seconds` at 50 Hz and returns every tick's (time, target, position, mood).
+fn pet_run(seconds: f64, look: impl Fn(f64) -> Option<f64>, held_at: impl Fn(f64) -> Option<f64>) -> Vec<(f64, f64, f64, Mood)> {
+    let dt = 0.02;
+    let (mut pet, mut position, mut target) = (Pet::new(0.0), 0.0f64, 0.0f64);
+    (0..(seconds / dt) as usize)
+        .map(|i| {
+            let t = i as f64 * dt;
+            position = held_at(t).unwrap_or(position + (target - position) * (dt / 0.05_f64).min(1.0));
+            let (next, mood) = pet.tick(dt, position, look(t));
+            target = next;
+            (t, next, position, mood)
+        })
+        .collect()
+}
+
+#[test]
+fn a_free_joint_looks_and_glances_and_never_struggles() {
+    // Nothing to look at: it glances about and comes home, inside its glance.
+    let idle = pet_run(20.0, |_| None, |_| None);
+    assert!(idle.iter().all(|r| r.3 == Mood::Idle), "{:?}", idle.iter().find(|r| r.3 != Mood::Idle));
+    assert!(idle.iter().any(|r| r.1 >= pet::GLANCE_DEG - 0.1) && idle.iter().any(|r| r.1 <= -pet::GLANCE_DEG + 0.1));
+    assert!(idle.iter().all(|r| r.1.abs() <= pet::GLANCE_DEG + 1e-9));
+
+    // Something moves across in front of it: it follows, at its own pace, and ends up pointing at it.
+    let watching = pet_run(6.0, |t| Some((40.0 * (t - 1.0)).clamp(-30.0, 45.0)), |_| None);
+    assert!(watching.iter().all(|r| r.3 == Mood::Watching));
+    let last = watching.last().expect("ticks");
+    assert!((last.2 - 45.0).abs() < 1.0, "pointing at it: {last:?}");
+    assert!(watching.windows(2).all(|w| (w[1].1 - w[0].1).abs() <= pet::GAZE_SPEED_DPS * 0.02 + 1e-9), "never faster than its gaze speed");
+
+    // Something far off to the side: it turns as far as its range and no further.
+    let far = pet_run(3.0, |_| Some(170.0), |_| None);
+    assert!(far.iter().all(|r| r.1 <= pet::RANGE_DEG + 1e-9) && (far.last().expect("ticks").1 - pet::RANGE_DEG).abs() < 1e-9);
+}
+
+#[test]
+fn a_held_joint_struggles_in_bursts_then_gives_up_and_is_calm_again_when_let_go() {
+    // A hand holds it at 0 from the start to 14 s. Its first glance (2.5 s) finds it cannot move.
+    let run = pet_run(22.0, |_| None, |t| (t < 14.0).then_some(0.0));
+    let moods: Vec<(f64, Mood)> = run.iter().map(|r| (r.0, r.3)).fold(Vec::new(), |mut seen, (t, m)| {
+        if seen.last().map(|l: &(f64, Mood)| l.1) != Some(m) {
+            seen.push((t, m));
+        }
+        seen
+    });
+    let order: Vec<Mood> = moods.iter().map(|m| m.1).collect();
+    use Mood::{Checking, GivenUp, Idle, Struggling};
+    assert_eq!(order[..10], [Idle, Struggling, Checking, Struggling, Checking, Struggling, Checking, Struggling, Checking, GivenUp], "{moods:?}");
+    let noticed = moods[1].0;
+    assert!((2.5..3.0).contains(&noticed), "held is noticed on the first glance, {noticed} s");
+    // A burst goes both ways about where it was held, and no further than a struggle's size.
+    let burst: Vec<f64> = run.iter().filter(|r| r.3 == Struggling).map(|r| r.1).collect();
+    assert!(burst.iter().any(|t| *t > 5.0) && burst.iter().any(|t| *t < -5.0));
+    assert!(burst.iter().all(|t| t.abs() <= pet::STRUGGLE_DEG + 1e-9));
+    // Given up: it is told to be wherever the hand has it, so it does not push.
+    assert!(run.iter().filter(|r| r.3 == GivenUp).all(|r| (r.1 - r.2).abs() < 1e-9));
+    // Still held after giving up: it tries again. Let go at 14 s: calm by the end, and it stays calm.
+    assert!(order[10..].contains(&Struggling), "{moods:?}");
+    assert!(run.iter().filter(|r| r.0 > 19.0).all(|r| r.3 == Idle), "{moods:?}");
+
+    // Let go during the first burst: one check, then calm.
+    let brief = pet_run(8.0, |_| None, |t| (t < 2.8).then_some(0.0));
+    let order: Vec<Mood> = brief.iter().map(|r| r.3).fold(Vec::new(), |mut seen, m| {
+        if seen.last() != Some(&m) {
+            seen.push(m);
+        }
+        seen
+    });
+    assert_eq!(order, [Idle, Struggling, Checking, Idle]);
 }
 
 #[test]

@@ -9,10 +9,14 @@
 
 pub mod bench;
 pub mod bridge;
+pub mod chase;
 pub mod control;
 pub mod firmware;
+pub mod hear;
 pub mod limits;
+pub mod pet;
 pub mod policy;
 pub mod record;
 pub mod robot;
+pub mod see;
 pub mod status_led;

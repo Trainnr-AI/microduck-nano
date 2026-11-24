@@ -21,6 +21,10 @@ the limits and the faults.
 | `src/limits.rs` | Loads those limits from `robot.json` and applies them to the targets the loop sends: a leg joint the rules hold stays at the pose last sent |
 | `src/record.rs` | MCAP recordings of ROS 2 messages for trainnr (`--record`) |
 | `src/bench.rs` | One servo moved on the bench for system identification (`duckd bench`) |
+| `src/hear.rs` | Hearing: a microphone's samples into loudness, claps and groups of claps (`duckd listen`, `duckd run --listen`) |
+| `src/see.rs` | Seeing: the camera's frames into where one coloured thing is: direction, size, distance (`duckd see`) |
+| `src/chase.rs` | Going after a thing: its direction and distance into the walk's command, inside what the policy was trained on (`duckd run --chase`) |
+| `src/pet.rs` | One joint behaving like part of an animal: it looks at what the camera sees and struggles when held (`duckd pet`) |
 | `src/status_led.rs` | The board's Linux-side RGB LED as `duckd`'s status light |
 | `src/main.rs` | `duckd`, the command-line tool: one function per command |
 | `tests/runtime.rs` | Host tests against a fake router and a tiny hand-made policy (`tests/data/`); no board needed |
@@ -71,8 +75,10 @@ and with `--exchange two-reads`, which has no gyro. `duckd run` refuses `state` 
 
 `joint_vel_rel` comes from each servo's own speed report, read with its angle and carried in the same state message
 (protocol 4); it is also recorded as `/joint_states` velocity. Where a servo gave none (`two-reads`), the speed is
-the difference from the previous tick. The speed register's unit (steps/s) is unconfirmed on a real SCS0009: bench
-checklist 8b checks it before a policy relies on it. The 15 extra words cost about 1.2 ms an exchange at 460800
+the difference from the previous tick. The speed register's unit (steps/s) was checked on one SCS0009 on
+2026-11-23 against the change of its position between reads: on the larger moves the report is 0.91 to 0.94 of
+that (six bench recordings, `scripts/servo-bench/bench_summary.py`), so the unit is right and the report reads
+somewhat low or late; on small moves, where a read stamp's 1 ms matters most, 0.72 to 0.83. The 15 extra words cost about 1.2 ms an exchange at 460800
 (`duck_step` 5.7 to 6.9 ms; a 50 Hz tick's exchange 4.0 to 5.2 ms, bare board, 2026-11-17).
 
 The gap before a real policy can run: the sign conventions of `projected_gravity` and `angular_velocity` are unchecked
@@ -104,9 +110,74 @@ targets asked for (`/joint_targets`), the goals the firmware actually wrote afte
 (`/joint_commands`) and every read of the servo, 100 a second at the default `--hz 100`, with its own speed report
 (`/joint_states`), stamped at the moment the servo was read (the microcontroller's clock, mapped onto this machine's
 by the fastest reply). The recording file is created before anything moves. It refuses without
-`--supervised` and against any other build. Untested with a servo: none has been on the bench yet.
-Turning a recording into an SCS0009 actuator model is not something trainnr does yet:
-[Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101).
+`--supervised` and against any other build. An exchange with the firmware that fails costs its tick and is counted
+(the board's internal link garbles a call now and then while a servo has power: four of about 9,400 on 2026-11-23); the run
+gives up only when they have failed for 0.2 s, well inside the 0.5 s after which the firmware switches the servo
+off by itself. First used with a servo on 2026-11-23 (one SCS0009, a bare horn: results in
+[`scripts/servo-bench/`](../scripts/servo-bench/README.md)). trainnr fits an actuator model from such recordings
+(`identify_system`, method `servo-bench`) once the servo drives an arm of known mass and length:
+`scripts/servo-bench/make_pendulum.py` writes the bench it wants.
+
+## Seeing
+
+`duckd see [--device /dev/video0] [--colour U,V] [--ball-mm 40] [--fov 60 | --at-mm 300]` looks for one coloured
+thing and prints, twice a second, the frame rate, its direction (degrees to the left of and above where the camera
+points), its size in the picture and, for a ball of known size, its distance. Without `--colour` it takes the
+colour in the middle of the picture: hold the toy in front of the camera once and keep the `--colour` it prints.
+`--at-mm` with the ball held at that distance measures the lens instead of assuming 60 degrees.
+
+A colour, not a trained detector, because it is the cheapest thing that gives a direction: the frames come
+uncompressed (YUYV, 320 x 240) from `v4l2-ctl` as a child process, and in that format a pixel's colour is two bytes
+apart from its brightness. On the board with the robot's camera (2026-11-23): 16.7 frames a second in a dim room
+(the camera's automatic exposure sets the pace; it offers 30), and under a tenth of one core for `duckd` even when
+the whole picture matches. What came out is the direction of a grey wall, which is all the camera had in front of
+it: **no coloured thing has been tracked yet**, and how steady a colour stays under the camera's automatic white
+balance is not known.
+
+The walking policy never sees a picture. The direction becomes the walk's command:
+`duckd run --policy FOLDER --chase U,V [--ball-mm 40]` turns to face the thing, walks to it as fast as the policy
+was trained to (slower as it nears, when the ball's size is given), and stops within 0.12 m (`src/chase.rs`). Out
+of sight for half a second, or the camera gone, and the policy is asked for nothing. It assumes the camera looks
+straight ahead of the body: turning the head to keep the thing in view, and allowing for where the head points,
+are not written. Tested on made-up frames and commands only; no robot walks yet.
+
+## One servo as a pet
+
+`duckd pet --joint NAME --supervised [--colour U,V]` is the interaction in miniature, for the one servo on the
+bench (it needs what `duckd bench` needs). The joint turns to point at the coloured thing the camera sees and
+glances about when there is nothing to see. Hold the horn and it struggles: bursts of 8 degrees each way, a small
+move between bursts to feel whether it is free, and after four bursts it gives up and goes where the hand takes it
+for three seconds. The board's matrix shows its mood.
+
+Being held is felt through the servo itself: a free joint is where it was told to be, give or take its lag (4
+degrees plus 0.1 s of the target's speed, from the bench recordings); one that stays away from its target for
+0.15 s is held. A joint held perfectly still looks free until it tries to move, which is why the idle joint
+glances about and why "am I free" is a small move, not a pause. The same idea is what will tell a whole robot that
+it has been picked up. Tested on a made-up servo in the host tests, and run twice with a hand on a real one
+(2026-11-24, one SCS0009, four AA cells at 5.7 V): **the hold was felt both times, on the first move the joint
+tried, and the struggle lasted a fifth of a second**, because a servo fighting a hand pulled the cells under the
+firmware's 4.3 V limit and the firmware switched it off, as it should. The first try jumped 12 degrees from side
+to side; the second swept 8 degrees at 240 deg/s and ended the same way. Giving up and calming down have not been
+seen on a servo: that needs a supply that holds its voltage.
+
+## Hearing
+
+The walking policy does not hear: it is trained in a simulation with no sound. Sound picks what the policy is
+asked to do instead.
+
+- `duckd listen --device DEVICE [--seconds 10]` prints what a microphone hears: the loudest 10 ms and the room's
+  noise twice a second, and each group of claps. `DEVICE` is an ALSA capture device as `arecord -L` names it.
+- `duckd run --policy FOLDER --command 0.2,0,0 --listen DEVICE` starts with the policy asked for nothing; two
+  claps switch to the command, two more switch back. If the microphone stops, the policy is asked for nothing from
+  there on.
+
+The samples come from ALSA's `arecord` as a child process (16-bit mono, 16 kHz), so `duckd` links no sound library.
+A clap is a burst at least 20 dB over the room's noise and louder than -30 dB of full scale that is over within
+120 ms; claps less than 0.6 s apart are one group.
+
+**Not tried with a microphone.** The robot has none: its camera turned out to be video only
+([build-and-flash.md](../docs/robot/build-and-flash.md)). The thresholds were chosen on made-up sound in the host
+tests; the servos' own noise next to a microphone is the real test, and nothing has been tuned against it.
 
 ## Run on the board
 
@@ -207,7 +278,8 @@ all 500 ticks for want of joint angles. The policy path through the loop is cove
 
 ## Next
 
-1. A command source (gamepad or network) instead of the zero command.
+1. A command source that sets speed and direction (gamepad or network); a microphone, so that `--listen` can be
+   tried at all.
 2. A trained policy: needs the SCS0009 actuator model first (see the [roadmap](../docs/project/roadmap.md)).
 3. Check the gravity and gyro sign conventions against the IMU on the bench and against the training simulation.
 4. The UART's hardware buffer on the microcontroller, and finding which side loses bytes, if more than 460800 baud
