@@ -54,6 +54,9 @@ class FakeBus : public duck::Transport {
   size_t tx_bytes = 0;
   bool echo = false;
   uint8_t status_error = 0;  // error byte put into every reply
+  // A write that is lost on the way (not applied, not answered): to this register, and if not -1 to this ID and
+  // with this first byte. -1 as the register: none is lost.
+  int lose_addr = -1, lose_id = -1, lose_value = -1;
 
   FakeBus() {
     for (int i = 0; i < kServoIds; ++i) servo[i].present = false;
@@ -142,6 +145,7 @@ class FakeBus : public duck::Transport {
         if (answers) reply(id, servo[id].mem + p[0], p[1]);
         break;
       case duck::scs::kWrite:
+        if (p[0] == lose_addr && (lose_id < 0 || lose_id == id) && (lose_value < 0 || lose_value == p[1])) break;
         apply(id, p[0], p + 1, len - 3);
         if (answers) reply(id, nullptr, 0);
         break;

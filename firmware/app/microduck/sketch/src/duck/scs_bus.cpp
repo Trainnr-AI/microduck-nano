@@ -192,6 +192,9 @@ BusError ScsBus::write_eeprom(uint8_t id, const EepromChunk* chunks, size_t coun
     if (lock_id != id && chunks[i].addr == reg::kId && e == BusError::kWrongId) e = BusError::kOk;
   }
   const BusError e2 = write(lock_id, reg::kLock, &lock, 1);
+  // An ID change that did not go through leaves the servo under its old ID, where the lock above does not reach
+  // it: lock that one too, or its memory stays open until it loses power. Its answer does not change the result.
+  if (lock_id != id && (e != BusError::kOk || e2 != BusError::kOk)) write(id, reg::kLock, &lock, 1);
   timeout_ms_ = normal_timeout_ms;
   return e != BusError::kOk ? e : e2;
 }

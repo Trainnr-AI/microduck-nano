@@ -69,6 +69,7 @@ class ScsBus {
   // Whether the Waveshare Bus Servo Adapter (A) does is UNCONFIRMED; set this
   // after the check in docs/robot/bench-checklist.md.
   void set_tx_echo(bool on) { tx_echo_ = on; }
+  bool tx_echo() const { return tx_echo_; }
   void set_reply_timeout_ms(uint32_t ms) { timeout_ms_ = ms; }
 
   // --- always allowed ---

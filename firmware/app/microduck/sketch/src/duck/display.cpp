@@ -28,7 +28,9 @@ uint16_t glyph(char c) {
 
 // Index 0 of the fault and posture tables (no fault, unknown posture) is shown as "?", like a code out of range.
 const char* const kFaultNames[] = {"?", "OVERLOAD", "HOT", "LOW VOLTS", "SERVO ERROR", "NO ANSWER", "FALL",
-                                   "BUS WRITE"};
+                                   "BUS WRITE", "POSITION JUMP", "IMU LOST"};
+static_assert(sizeof(kFaultNames) / sizeof(kFaultNames[0]) == static_cast<size_t>(kFaultCount),
+              "a fault without a name for the matrix");
 const char* const kJointNames[kNumJoints] = {
     "L HIP YAW", "L HIP ROLL", "L HIP PITCH", "L KNEE", "L ANKLE", "NECK", "HEAD PITCH", "HEAD YAW", "HEAD ROLL",
     "R HIP YAW", "R HIP ROLL", "R HIP PITCH", "R KNEE", "R ANKLE", "BEAK"};
@@ -217,6 +219,20 @@ int display_text(const DisplayInput& in, char* buf) {
   }
   t.put(fresh(in.ms_since_call, kLinkReadFreshMs) ? "  LINUX OK" : "  NO LINUX");
   return t.n;
+}
+
+BenchState shown_bench(const BenchState& first, const BenchState& second) {
+  const BenchState* both[2] = {&first, &second};
+  for (const BenchState* b : both) {
+    if (b->mode == BenchMode::kFault && b->fault != Fault::kBusWrite) return *b;
+  }
+  for (const BenchState* b : both) {
+    if (b->mode == BenchMode::kFault) return *b;
+  }
+  for (const BenchState* b : both) {
+    if (b->mode == BenchMode::kArmed) return *b;
+  }
+  return first;
 }
 
 void render_display(const DisplayInput& in, uint32_t now_ms, DisplayOutput* out) {

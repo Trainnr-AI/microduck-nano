@@ -47,6 +47,24 @@ bool Controller::pose_near(const float q[kNumJoints], const float pose[kNumPoseJ
   return true;
 }
 
+bool Controller::setpoint_near(const float pose[kNumPoseJoints], float tol, bool legs_only) const {
+  float sp[kNumJoints];
+  for (int j = 0; j < kNumJoints; ++j) sp[j] = filter_.setpoint()[j];
+  if (balancing()) {
+    sp[kLAnkle] -= balance_.correction();
+    sp[kRAnkle] += balance_.correction();
+  }
+  return pose_near(sp, pose, tol, legs_only);
+}
+
+void Controller::idle_poll(uint32_t now_ms) {
+  // A servo that is assigned but absent costs a reply timeout per read, so this rate stays low.
+  if (now_ms - idle_poll_ms_ >= 100) {
+    idle_poll_ms_ = now_ms;
+    poll_servos(now_ms, 1);
+  }
+}
+
 BusError Controller::write_goals(const uint16_t steps[kNumJoints]) {
   uint8_t ids[kNumJoints];
   for (int j = 0; j < kNumJoints; ++j) ids[j] = cfg_.joints[j].servo_id;
@@ -98,8 +116,9 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   BusError e = write_goals(steps);
   for (int j = 0; j < kNumJoints && e == BusError::kOk; ++j) e = bus_.torque_on(cfg_.joints[j].servo_id);
   if (e != BusError::kOk) {
-    bus_.torque_off_all();
-    bus_.allow_motion(false);
+    // Some servos may have torque. release() says "off" twice and the following ticks repeat it: on a bus that
+    // just lost a reply, one broadcast can be lost too.
+    release();
     return Result::kBusError;
   }
 
@@ -120,6 +139,8 @@ Result Controller::arm(uint32_t key, uint32_t now_ms, const ImuSample& imu) {
   }
   supported_ = false;
   move_.cancel();
+  move_incomplete_ = false;
+  imu_lost_.reset();
   balance_.reset();
   mode_ = Mode::kArmed;
   last_cmd_ms_ = now_ms;
@@ -133,6 +154,7 @@ void Controller::release() {
   bus_.allow_motion(false);
   move_.cancel();
   posture_ = Posture::kUnknown;
+  off_ticks_ = 0;  // tick() repeats the broadcast
 }
 
 void Controller::disarm() {
@@ -197,6 +219,7 @@ Result Controller::stand(bool supported, uint32_t now_ms) {
       return Result::kBusy;
   }
   move_progress_ = 0.0f;
+  move_incomplete_ = false;
   return Result::kOk;
 }
 
@@ -204,8 +227,12 @@ Result Controller::sit(uint32_t now_ms, const ImuSample& imu) {
   if (mode_ != Mode::kArmed) return Result::kNotArmed;
   if (move_.active()) return Result::kBusy;
   if (posture_ != Posture::kStanding) return Result::kWrongPosture;
-  // The checked path starts at the STAND keyframe, head included.
-  if (!pose_near(nominal_, cfg_.stand, cfg_.motion.pose_tol_deg, false)) return Result::kNotAtStand;
+  // The checked path starts at the STAND keyframe, head included: both what is asked for and the pose actually
+  // being sent, which lags it by the speed limit and may be held short of it by a leg rule.
+  if (!pose_near(nominal_, cfg_.stand, cfg_.motion.pose_tol_deg, false) ||
+      !setpoint_near(cfg_.stand, cfg_.motion.pose_tol_deg, false)) {
+    return Result::kNotAtStand;
+  }
   // The sit needs the balance law, and the slope check needs the IMU.
   if (!imu_usable(imu, now_ms)) return Result::kImuRequired;
   const Tilt t = tilt_from_up(cfg_.imu, imu.up);
@@ -214,6 +241,7 @@ Result Controller::sit(uint32_t now_ms, const ImuSample& imu) {
   move_.start(cfg_.stand, cfg_.sit, cfg_.motion.sit_stand_s);
   posture_ = Posture::kMovingToSit;
   move_progress_ = 0.0f;
+  move_incomplete_ = false;
   return Result::kOk;
 }
 
@@ -258,17 +286,22 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
     if (off_repeat_due(fault_ticks_, true)) bus_.torque_off_all();
     ++fault_ticks_;
     flags_ = 0;
+    // And keep reading: the joints move after a fault (the robot folds), and what is reported must be where they
+    // are now, or "not answering", never the pose from before it.
+    idle_poll(now_ms);
     return;
   }
 
   if (mode_ == Mode::kDisarmed) {
     // Telemetry only, at a low rate so a bench without servos costs little.
     flags_ = imu_ok_ ? 0 : kStatImuStale;
-    // A servo that is assigned but absent costs a reply timeout per read, so this rate stays low.
-    if (now_ms - idle_poll_ms_ >= 100) {
-      idle_poll_ms_ = now_ms;
-      poll_servos(now_ms, 1);
+    // After a disarm or an arm that failed part-way, say "torque off" a few more times in case one was lost.
+    // Not while the motion gate is open: then a bench servo is armed and the bus is its.
+    if (off_ticks_ < kOffRepeatTicks) {
+      if (!bus_.motion_allowed()) bus_.torque_off_all();
+      ++off_ticks_;
     }
+    idle_poll(now_ms);
     return;
   }
 
@@ -302,12 +335,19 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   if (move_.active()) {
     move_progress_ = move_.advance(dt, want);  // fills the 14 pose joints
     if (!move_.active()) {
-      if (posture_ == Posture::kMovingToSit) {
+      // The move's time is up. It is done only if the legs got there: a leg the rules held (armed in a pose they
+      // refuse, it stays where it is) leaves the robot in no known posture, and saying STANDING would switch
+      // balance and fall detection on for a pose nobody planned. `want` is the end pose; the setpoint is one tick
+      // behind it at the end of an eased move.
+      if (!setpoint_near(want, cfg_.motion.pose_tol_deg, true)) {
+        posture_ = Posture::kUnknown;
+        move_incomplete_ = true;
+      } else if (posture_ == Posture::kMovingToSit) {
         posture_ = Posture::kSitting;
       } else {
         posture_ = Posture::kStanding;
-        supported_ = false;
       }
+      supported_ = false;
       for (int i = 0; i < kNumPoseJoints; ++i) user_[i] = want[i];
     }
   } else {
@@ -330,9 +370,14 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   for (int i = 0; i < kNumJoints; ++i) nominal_[i] = want[i];
 
   // IMU ankle balance and fall detection, against the planned trunk pitch.
-  const bool balancing = posture_ != Posture::kUnknown && !supported_;
+  const bool balancing = this->balancing();
   if (supported_) flags |= kStatSupported;
+  if (move_incomplete_) flags |= kStatMoveIncomplete;
   if (!imu_ok_) flags |= kStatImuStale;
+  // Balancing on an IMU that has gone silent: a fall would not be seen. Only where the IMU is required to arm.
+  if (imu_lost_.update(balancing && !imu_ok_ && cfg_.imu.require_to_arm, now_ms, kImuLostS)) {
+    faults_.raise(Fault::kImuLost, -1);
+  }
   if (balancing && imu_ok_) {
     const float err = tilt_.pitch_deg - planned_pitch_deg(cfg_.motion, sit_fraction());
     balance_.update(err, dt);
@@ -351,7 +396,9 @@ void Controller::tick(uint32_t now_ms, const ImuSample& imu) {
   flags |= filter_.step(want, dt, checked_path, out);
 
   uint16_t steps[kNumJoints];
-  for (int j = 0; j < kNumJoints; ++j) steps[j] = static_cast<uint16_t>(deg_to_step(cfg_, j, out[j]));
+  // The filter's output as it is: it has the joint limits in it already, and a joint that was outside them at
+  // arming is on its way in at its speed limit. Clamping here would send that joint to its limit in one tick.
+  for (int j = 0; j < kNumJoints; ++j) steps[j] = static_cast<uint16_t>(setpoint_to_step(cfg_, j, out[j]));
   if (write_goals(steps) != BusError::kOk) faults_.raise(Fault::kBusWrite, -1);
 
   flags_ = flags;

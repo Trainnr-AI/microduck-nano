@@ -1025,6 +1025,323 @@ static void test_faults_switch_torque_off() {
   trips([](Rig& r) { r.roll = 40.0f; }, 20, Fault::kFall);
 }
 
+// ------------------------------------------------- the review of 2026-11-25
+
+// Every servo at `q` (degrees), whatever the joint limits say: a limp robot's joints rest where they fall.
+static void place_anywhere(FakeBus& bus, const RobotConfig& c, const float q[kNumJoints]) {
+  for (int j = 0; j < kNumJoints; ++j) {
+    bus.add(c.joints[j].servo_id);
+    bus.servo[c.joints[j].servo_id].set_position(static_cast<uint16_t>(setpoint_to_step(c, j, q[j])));
+  }
+}
+
+static int torque_offs_since(const FakeBus& fake, size_t from) {
+  int n = 0;
+  for (size_t i = from; i < fake.writes.size(); ++i) {
+    n += fake.writes[i].addr == scs::reg::kTorqueEnable && fake.writes[i].data[0] == 0;
+  }
+  return n;
+}
+
+static void test_a_joint_outside_its_limits_comes_in_at_its_speed_limit() {
+  // The robot: left hip roll resting at 39.9 deg (its limit is 18.5). Armed, it must not jump to the limit.
+  Rig r(calibrated_config());
+  float q[kNumJoints];
+  pose_to_joints(r.cfg.stand, q);
+  q[kLHipRoll] = 39.9f;
+  place_anywhere(r.fake, r.cfg, q);
+  CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kOk);
+  const float start = r.servo_deg(kLHipRoll);
+  const float per_tick = r.cfg.joints[kLHipRoll].max_speed_dps * 0.01f;
+  CHECK_NEAR(start, 39.9f, 0.3f);
+  float before = start;
+  for (int i = 0; i < 5; ++i) {
+    r.run(1);
+    CHECK(before - r.servo_deg(kLHipRoll) <= per_tick + 0.3f);  // never faster than its speed limit
+    CHECK_NEAR(r.servo_deg(kLHipRoll), r.ctl.setpoint_deg()[kLHipRoll], 0.2f);  // the servo is where the setpoint is
+    before = r.servo_deg(kLHipRoll);
+  }
+  CHECK(before < start - 4 * per_tick);  // and it is on its way in
+  r.run(100);
+  CHECK_NEAR(r.servo_deg(kLHipRoll), r.cfg.joints[kLHipRoll].max_deg, 0.3f);
+  CHECK(r.ctl.status().mode == Mode::kArmed);
+
+  // The bench: a knee at +80 (its limit is 68) holds there until a target comes, then comes in at the limit.
+  RobotConfig c = kRobotConfig;
+  for (int j = 0; j < kNumJoints; ++j) c.joints[j].servo_id = kServoIdUnassigned;
+  c.joints[kLKnee].servo_id = 7;
+  c.joints[kLKnee].calibrated = true;
+  FakeBus fake;
+  ScsBus bus(fake);
+  fake.add(7);
+  fake.servo[7].set_position(static_cast<uint16_t>(setpoint_to_step(c, kLKnee, 80.0f)));
+  const uint16_t rest = fake.servo[7].position();
+  BenchServo b(c, bus, true);
+  uint32_t now = 1000;
+  CHECK(b.arm(kArmKey, kLKnee, now) == Result::kOk);
+  for (int i = 0; i < 20; ++i) {
+    now += 10;
+    CHECK(b.set_target(NAN, now) == Result::kOk);  // no target, but the Linux side is there
+    b.tick(now, false);
+  }
+  CHECK(b.armed() && fake.servo[7].position() == rest);
+  const float knee_per_tick = c.joints[kLKnee].max_speed_dps * 0.01f;
+  float last = step_to_deg(c, kLKnee, static_cast<int16_t>(rest));
+  for (int i = 0; i < 5; ++i) {
+    now += 10;
+    CHECK(b.set_target(0.0f, now) == Result::kOk);
+    b.tick(now, false);
+    const float at = step_to_deg(c, kLKnee, static_cast<int16_t>(fake.servo[7].position()));
+    CHECK(last - at <= knee_per_tick + 0.3f && at < last);
+    last = at;
+  }
+  // A target that is not a number still counts as the Linux side talking: silence, not NaN, switches it off.
+  for (int i = 0; i < 80; ++i) {
+    now += 10;
+    b.set_target(NAN, now);
+    b.tick(now, false);
+  }
+  CHECK(b.armed());
+}
+
+static void test_sit_waits_until_the_legs_are_at_stand() {
+  Rig r(calibrated_config());
+  r.arm_at(r.cfg.stand);
+  r.run(20);
+  // The legs are sent away from STAND, then STAND is asked for again and sit() comes at once: what is asked for
+  // is STAND, the pose being sent is not yet.
+  float t[kNumJoints];
+  pose_to_joints(r.cfg.stand, t);
+  t[kLHipPitch] = r.cfg.stand[kLHipPitch] + 30.0f;
+  t[kRHipPitch] = r.cfg.stand[kRHipPitch] - 30.0f;
+  r.ctl.set_targets(t, r.now);
+  r.run(100);
+  CHECK_NEAR(r.ctl.setpoint_deg()[kLHipPitch], t[kLHipPitch], 0.5f);
+  pose_to_joints(r.cfg.stand, t);
+  r.ctl.set_targets(t, r.now);
+  r.run(1);
+  CHECK(r.ctl.sit(r.now, r.imu()) == Result::kNotAtStand);
+  CHECK(r.ctl.status().posture == Posture::kStanding);
+  r.run(100);
+  CHECK(r.ctl.sit(r.now, r.imu()) == Result::kOk);
+  // And with the ankles carrying a balance correction, STAND is still STAND.
+  Rig leaning(calibrated_config());
+  leaning.arm_at(leaning.cfg.stand);
+  leaning.pitch = 3.0f;
+  leaning.run(100);
+  CHECK(absf(leaning.ctl.status().balance_deg) > 3.5f);
+  CHECK(leaning.ctl.sit(leaning.now, leaning.imu()) == Result::kOk);
+}
+
+static void test_a_stand_that_does_not_arrive_is_not_standing() {
+  // Armed in poses the leg rules refuse, a supported stand cannot move that leg. When its time is up the robot
+  // must not call itself standing.
+  const RobotConfig cfg = calibrated_config();
+  int stuck = 0, arrived = 0;
+  const float pitches[] = {-60.0f, 0.0f, 60.0f, 81.5f}, knees[] = {-60.0f, 0.0f, 50.0f}, ankles[] = {-60.0f, -28.2f, 40.0f};
+  for (float pitch : pitches) {
+    for (float knee : knees) {
+      for (float ankle : ankles) {
+        float q[kNumJoints];
+        pose_to_joints(cfg.stand, q);
+        q[kLHipPitch] = pitch;
+        q[kLKnee] = knee;
+        q[kLAnkle] = ankle;
+        if (leg_allowed(cfg, q, false)) continue;
+        Rig r(cfg);
+        place_anywhere(r.fake, r.cfg, q);
+        CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kOk);
+        CHECK(r.ctl.stand(true, r.now) == Result::kOk);
+        r.run(320);
+        bool at_stand = true;
+        for (int j = kLHipYaw; j <= kLAnkle; ++j) at_stand = at_stand && absf(r.servo_deg(j) - cfg.stand[j]) < 3.0f;
+        const Status s = r.ctl.status();
+        if (at_stand) {
+          ++arrived;
+          CHECK(s.posture == Posture::kStanding && !(s.flags & kStatMoveIncomplete));
+        } else {
+          ++stuck;
+          CHECK(s.posture == Posture::kUnknown && (s.flags & kStatMoveIncomplete));
+          CHECK(!(s.flags & kStatSupported));
+          CHECK(r.ctl.sit(r.now, r.imu()) == Result::kWrongPosture);
+          CHECK(s.mode == Mode::kArmed);  // held, not faulted: balance and fall detection never came on
+          // Asking again starts over, and clears the flag for the new try.
+          CHECK(r.ctl.stand(true, r.now) == Result::kOk);
+          r.run(1);
+          CHECK(!(r.ctl.status().flags & kStatMoveIncomplete));
+        }
+      }
+    }
+  }
+  CHECK(stuck > 0);  // the grid above does hold poses the rules will not let a leg leave
+  (void)arrived;
+}
+
+static void test_a_faulted_robot_still_reports_where_its_joints_are() {
+  Rig r(calibrated_config());
+  r.arm_at(r.cfg.stand);
+  r.run(20);
+  r.fake.servo[r.cfg.joints[kRKnee].servo_id].mem[scs::reg::kPresentTemperature] = 90;
+  r.run(20);
+  CHECK(r.ctl.status().mode == Mode::kFault);
+  // Limp, the left knee folds and the head's servo loses its plug.
+  const uint8_t knee = r.cfg.joints[kLKnee].servo_id, yaw = r.cfg.joints[kHeadYaw].servo_id;
+  r.fake.servo[knee].set_position(300);
+  r.fake.servo[yaw].mute = true;
+  const size_t reads = r.fake.reads.size();
+  r.run(300);  // 3 s: one servo every 100 ms goes round all fifteen twice
+  CHECK(r.fake.reads.size() >= reads + 28 && r.fake.reads.size() <= reads + 31);
+  CHECK_NEAR(r.ctl.measured_deg()[kLKnee], step_to_deg(r.cfg, kLKnee, 300), 0.01f);
+  CHECK(r.ctl.feedback_valid(kLKnee) && !r.ctl.feedback_valid(kHeadYaw));
+  CHECK(r.ctl.status().mode == Mode::kFault && r.ctl.status().fault == Fault::kOverTemp);  // reading changes nothing
+  CHECK(r.fake.torque_count() == 0);  // and reading switches nothing on: every write from here on is "off"
+  const size_t writes = r.fake.writes.size();
+  r.run(100);
+  for (size_t i = writes; i < r.fake.writes.size(); ++i) {
+    CHECK(r.fake.writes[i].addr == scs::reg::kTorqueEnable && r.fake.writes[i].data[0] == 0);
+  }
+}
+
+static void test_losing_the_imu_while_balancing_is_a_fault() {
+  {
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    r.pitch = 2.0f;
+    r.run(100);
+    r.imu_valid = false;
+    r.run(45);  // under half a second: flagged, still armed
+    CHECK(r.ctl.status().mode == Mode::kArmed && (r.ctl.status().flags & kStatImuStale));
+    r.run(10);
+    CHECK(r.ctl.status().mode == Mode::kFault && r.ctl.status().fault == Fault::kImuLost);
+    CHECK(r.fake.torque_count() == 0);
+  }
+  {  // it comes back in time: nothing happens, however often
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    for (int i = 0; i < 10; ++i) {
+      r.imu_valid = false;
+      r.run(40);
+      r.imu_valid = true;
+      r.run(2);
+    }
+    CHECK(r.ctl.status().mode == Mode::kArmed);
+  }
+  {  // not balancing (unknown posture, or a supported stand): the IMU is not what holds the robot up
+    Rig r(calibrated_config());
+    float odd[kNumPoseJoints] = {5, 3, -10, 20, 4, -30, 10, 40, 0, -5, -3, 10, -20, -4};
+    r.arm_at(odd);
+    r.imu_valid = false;
+    r.run(100);
+    CHECK(r.ctl.status().mode == Mode::kArmed);
+    CHECK(r.ctl.stand(true, r.now) == Result::kOk);
+    r.run(200);
+    CHECK(r.ctl.status().mode == Mode::kArmed && (r.ctl.status().flags & kStatSupported));
+  }
+  {  // a robot configured to arm without an IMU keeps its old behaviour
+    RobotConfig c = calibrated_config();
+    c.imu.require_to_arm = false;
+    Rig r(c);
+    r.arm_at(r.cfg.stand);
+    r.imu_valid = false;
+    r.run(200);
+    CHECK(r.ctl.status().mode == Mode::kArmed);
+  }
+}
+
+static void test_torque_off_is_repeated_after_a_disarm_and_a_failed_arm() {
+  {  // disarm: twice at once, then on each of the next ten ticks, then no more
+    Rig r(calibrated_config());
+    r.arm_at(r.cfg.stand);
+    r.run(10);
+    size_t from = r.fake.writes.size();
+    r.ctl.disarm();
+    CHECK(torque_offs_since(r.fake, from) == 2);
+    r.run(30);
+    CHECK(torque_offs_since(r.fake, from) == 2 + static_cast<int>(kOffRepeatTicks));
+    CHECK(r.ctl.status().mode == Mode::kDisarmed);
+  }
+  {  // an arm that fails part-way: servo 9 never answers "torque on"; servos 1 to 8 had it
+    Rig r(calibrated_config());
+    place_servos(r.fake, r.cfg, r.cfg.stand);
+    r.fake.lose_addr = scs::reg::kTorqueEnable;
+    r.fake.lose_id = 9;
+    r.fake.lose_value = 1;
+    size_t from = r.fake.writes.size();
+    CHECK(r.ctl.arm(kArmKey, r.now, r.imu()) == Result::kBusError);
+    CHECK(r.ctl.status().mode == Mode::kDisarmed && !r.bus.motion_allowed() && r.fake.torque_count() == 0);
+    CHECK(torque_offs_since(r.fake, from) == 2);
+    r.run(30);
+    CHECK(torque_offs_since(r.fake, from) == 2 + static_cast<int>(kOffRepeatTicks));
+  }
+  {  // a robot that was never armed says nothing, and neither does one whose bus a bench servo owns
+    Rig r(calibrated_config());
+    place_servos(r.fake, r.cfg, r.cfg.stand);
+    r.run(30);
+    CHECK(r.fake.writes.empty());
+    r.arm_at(r.cfg.stand);
+    r.ctl.disarm();
+    r.bus.allow_motion(true);  // as a bench servo armed right after
+    size_t from = r.fake.writes.size();
+    r.run(30);
+    CHECK(torque_offs_since(r.fake, from) == 0);
+  }
+}
+
+static void test_the_display_speaks_of_the_right_bench_servo() {
+  BenchState off, armed, faulted, stopped;
+  off.mode = BenchMode::kOff; off.fault = Fault::kNone; off.joint = -1; off.setpoint_deg = 0.0f;
+  armed = off; armed.mode = BenchMode::kArmed; armed.joint = kLAnkle;
+  faulted = off; faulted.mode = BenchMode::kFault; faulted.fault = Fault::kOverload; faulted.joint = kLAnkle;
+  stopped = off; stopped.mode = BenchMode::kFault; stopped.fault = Fault::kBusWrite; stopped.joint = kLKnee;
+  // The second servo alone has torque: that is what the display must say.
+  CHECK(shown_bench(off, armed).mode == BenchMode::kArmed && shown_bench(off, armed).joint == kLAnkle);
+  CHECK(shown_bench(armed, off).joint == kLAnkle);
+  // The second one faulted and took the first down with BUS WRITE: the fault shown is the second one's.
+  CHECK(shown_bench(stopped, faulted).fault == Fault::kOverload && shown_bench(stopped, faulted).joint == kLAnkle);
+  CHECK(shown_bench(faulted, stopped).fault == Fault::kOverload);
+  CHECK(shown_bench(stopped, off).fault == Fault::kBusWrite);  // a bus write fault of its own is still shown
+  CHECK(shown_bench(off, off).mode == BenchMode::kOff);
+  // On the matrix and LED3.
+  DisplayInput in;
+  memset(&in, 0, sizeof(in));
+  in.status.mode = Mode::kDisarmed;
+  in.status.fault_joint = -1;
+  in.ms_since_call = in.ms_since_command = in.ms_since_message = kNever;
+  in.message = "";
+  in.bench = shown_bench(off, armed);
+  char text[kTextMax];
+  display_text(in, text);
+  CHECK(strcmp(text, "BENCH L ANKLE") == 0);
+  DisplayOutput out;
+  render_display(in, 0, &out);
+  CHECK(out.led3 == kRgbMagenta);
+  // Every fault has a name of its own.
+  for (int f = 1; f < kFaultCount; ++f) {
+    in.bench = off;
+    in.status.mode = Mode::kFault;
+    in.status.fault = static_cast<Fault>(f);
+    display_text(in, text);
+    CHECK(strncmp(text, "FAULT ", 6) == 0 && text[6] != '?');
+  }
+  in.status.fault = Fault::kPositionJump;
+  in.status.fault_joint = kLKnee;
+  display_text(in, text);
+  CHECK(strcmp(text, "FAULT POSITION JUMP L KNEE") == 0);
+}
+
+static void test_a_failed_id_change_does_not_leave_the_memory_open() {
+  FakeBus fake;
+  ScsBus bus(fake);
+  fake.add(1);
+  fake.servo[1].mem[scs::reg::kId] = 1;
+  fake.servo[1].mem[scs::reg::kLock] = 1;
+  bus.allow_eeprom(true);
+  fake.lose_addr = scs::reg::kId;  // the write of the new ID is lost on the way
+  CHECK(bus.write_id(1, 7) != BusError::kOk);
+  CHECK(fake.servo[1].mem[scs::reg::kId] == 1);    // still its old self
+  CHECK(fake.servo[1].mem[scs::reg::kLock] == 1);  // and locked again
+}
+
 static void test_gyro_in_status() {
   // The gyro is turned into the body frame by the mounting matrix and reported only while fresh and calibrated;
   // otherwise it reads as not measured (zeros with gyro_ok false), never as the last value.
@@ -1650,6 +1967,14 @@ int main(int argc, char** argv) {
   RUN(test_position_jump_is_a_fault);
   RUN(test_a_command_stamped_after_the_tick_is_not_silence);
   RUN(test_command_timeout_holds);
+  RUN(test_a_joint_outside_its_limits_comes_in_at_its_speed_limit);
+  RUN(test_sit_waits_until_the_legs_are_at_stand);
+  RUN(test_a_stand_that_does_not_arrive_is_not_standing);
+  RUN(test_a_faulted_robot_still_reports_where_its_joints_are);
+  RUN(test_losing_the_imu_while_balancing_is_a_fault);
+  RUN(test_torque_off_is_repeated_after_a_disarm_and_a_failed_arm);
+  RUN(test_the_display_speaks_of_the_right_bench_servo);
+  RUN(test_a_failed_id_change_does_not_leave_the_memory_open);
   RUN(test_gyro_in_status);
   RUN(test_status_display);
   RUN(test_armed_reads_every_servo_each_policy_tick);

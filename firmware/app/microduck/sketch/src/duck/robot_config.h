@@ -127,6 +127,10 @@ bool config_ready_for_motion(const RobotConfig& cfg);
 // Joint angle <-> servo step. deg_to_step clamps to the joint's limits and to
 // the servo's step range.
 int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg);
+// The same without the clamp to the joint's limits (the servo's step range still holds). For a setpoint the safety
+// filter or the bench has already limited: a joint that was outside its limits when it was armed is brought in at
+// its speed limit, and its goal has to follow that setpoint, not jump to the limit.
+int16_t setpoint_to_step(const RobotConfig& cfg, int joint, float deg);
 float step_to_deg(const RobotConfig& cfg, int joint, int16_t step);
 // The servo's own speed report (register 58, steps/s with the direction in bit 15: checked against the change of
 // position on a servo, 2026-11-18) as the joint's

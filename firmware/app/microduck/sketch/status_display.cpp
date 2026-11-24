@@ -63,7 +63,7 @@ void status_display_update(uint32_t now) {
   in.ms_since_command = ms_since(g_last_command_ms, now);
   in.message = g_message;
   in.ms_since_message = ms_since(g_message_ms, now);
-  in.bench = g_bench.state();
+  in.bench = duck::shown_bench(g_bench.state(), g_bench2.state());
   duck::DisplayOutput out;
   duck::render_display(in, now, &out);
   if (memcmp(out.matrix, g_frame, sizeof(g_frame)) != 0) {

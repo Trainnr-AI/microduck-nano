@@ -102,6 +102,35 @@ Things to know, because they differ from what you might assume:
 - **No hardware watchdog yet.** If the microcontroller itself hangs, the servos keep holding their last goal, protected
   only by their own overload settings. See open items.
 
+### Changed after the review of 2026-11-25
+
+A review of the whole firmware found ten faults, none caught by the tests of the day. Each now has a host test.
+
+- **A joint outside its limits when it is armed comes in at its speed limit.** The goal written to a servo is the
+  filter's setpoint itself (`setpoint_to_step`); it used to be clamped once more on the way out, which sent such a
+  joint to its limit in one tick at full servo speed. The same on the bench. A limp hip rests outside its narrow
+  range easily.
+- **`sit()` looks at the pose being sent, not only at the pose asked for.** Right after a jump of the targets to
+  STAND the legs are still on their way, and the sit path is not checked against the leg rules.
+- **A sit or stand whose time runs out short of its pose leaves the posture UNKNOWN**, with status flag bit 12
+  (`kStatMoveIncomplete`) up until the next one starts. It used to say STANDING and switch balance and fall
+  detection on wherever the legs were. A leg armed in a pose its rules refuse is still held for good: the way out
+  is to disarm, move it by hand and arm again. Letting the firmware walk a leg out of such a pose would change the
+  leg rules, which exist in the runtime too, and has not been designed.
+- **Balancing on an IMU that has gone silent for half a second is a fault** (`IMU LOST`, fault 9), where the IMU is
+  required to arm. Before, fall detection simply stopped and the last ankle correction stayed on.
+- **"Torque off" is repeated on the ten ticks after a disarm and after an arm that failed part-way**, as it already
+  was after a fault: one broadcast can be lost on the bus that just lost a reply.
+- **`duck_set_echo` is refused while a robot or bench servo is armed**, like the other raw bus tools; with the
+  wrong setting every read fails and the robot would drop. It returns the setting in force.
+- **A faulted robot keeps reading its servos**, one every 100 ms as when disarmed. The angles it reported were the
+  ones from before the fault, marked as measured.
+- **The lights speak of whichever bench servo has torque or faulted**, the second one included, and of the fault
+  that came first when one servo's stop takes the other down.
+- **Every fault has a name on the matrix** (`POSITION JUMP` had none and showed as `?`); a new fault without one
+  no longer compiles.
+- **An ID change that fails locks the servo's memory under its old ID too.**
+
 ## Firmware functions (Bridge)
 
 Call them from Python with `duck_client.Duck(Bridge)`, or directly: `Bridge.call("duck_status")`.

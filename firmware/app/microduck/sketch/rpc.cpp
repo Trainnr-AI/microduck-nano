@@ -247,10 +247,12 @@ ReadResult rpc_read(int32_t id, int32_t addr, int32_t n) {
 }
 
 // For adapters that echo transmitted bytes (bench checklist).
+// Refused while a control loop owns the bus, like the other raw bus tools: with the wrong setting every read
+// fails, and an armed robot would drop on the "no answer" fault. Returns the setting in force.
 bool rpc_set_echo(bool on) {
   note_call();
-  g_bus.set_tx_echo(on);
-  return on;
+  if (!rpc::bus_owned()) g_bus.set_tx_echo(on);
+  return g_bus.tx_echo();
 }
 
 // --------------------------------------------- the LED matrix

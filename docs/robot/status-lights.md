@@ -29,7 +29,8 @@ row7  G W . . h h h h h . .  .  A     h  neck pitch, head pitch, head yaw, head 
 
 **Text** (rows 0-4). Text that fits stands still; longer text scrolls in from the right. In order of priority:
 
-1. A fault, in words: `FAULT HOT L KNEE`, `FAULT NO ANSWER R ANKLE`, `FAULT FALL`.
+1. A fault, in words: `FAULT HOT L KNEE`, `FAULT NO ANSWER R ANKLE`, `FAULT FALL`, `FAULT POSITION JUMP L KNEE`,
+   `FAULT IMU LOST`.
 2. A message from the Linux side (`duck_say`, `duckd say TEXT`, `Duck.say()` in Python). It stays up for 3 s after
    it was last sent, or two passes if it scrolls; send it again to keep it. `duckd run` announces itself this way.
 3. The status ticker, live: `SAFE` or `ARMED STAND`; servos answering (`SV 0/15`); the IMU (`NO IMU`, `IMU ?` when

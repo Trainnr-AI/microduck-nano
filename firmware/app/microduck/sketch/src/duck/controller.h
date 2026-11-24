@@ -74,7 +74,12 @@ enum StatusFlag : uint16_t {
   kStatLegCmdIgnored = 1 << 9,  // leg targets ignored in this posture
   kStatImuStale = 1 << 10,
   kStatSupported = 1 << 11,     // supported stand: balance and fall detection off
+  kStatMoveIncomplete = 1 << 12,  // the last sit / stand ran out of time short of its pose; posture is unknown
 };
+
+// Balancing with an IMU that has gone silent for this long is a fault (when the config requires the IMU to arm):
+// without it a fall is not seen and the last ankle correction would stay on for good.
+constexpr float kImuLostS = 0.5f;
 
 struct Status {
   Mode mode;
@@ -126,6 +131,10 @@ class Controller {
   bool gyro_usable(const ImuSample& imu, uint32_t now_ms) const;
   void poll_servos(uint32_t now_ms, int count);  // up to `count` assigned servos, round-robin
   bool pose_near(const float q[kNumJoints], const float pose[kNumPoseJoints], float tol, bool legs_only) const;
+  // Is the filter's setpoint (the pose being sent, less the ankle balance correction) at `pose`?
+  bool setpoint_near(const float pose[kNumPoseJoints], float tol, bool legs_only) const;
+  bool balancing() const { return posture_ != Posture::kUnknown && !supported_; }
+  void idle_poll(uint32_t now_ms);  // one servo every 100 ms, with no torque: telemetry
   float sit_fraction() const;
 
   const RobotConfig& cfg_;
@@ -154,6 +163,9 @@ class Controller {
   bool have_tick_ = false;
   uint32_t last_cmd_ms_ = 0;
   uint32_t fault_ticks_ = 0;
+  uint32_t off_ticks_ = kOffRepeatTicks;  // ticks since torque was last switched off; nothing to repeat at power-up
+  bool move_incomplete_ = false;
+  Held imu_lost_;
   uint32_t idle_poll_ms_ = 0;
   int poll_joint_ = 0;
 };

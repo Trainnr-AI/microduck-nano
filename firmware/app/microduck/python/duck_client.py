@@ -21,14 +21,15 @@ MODES = ["DISARMED", "ARMED", "FAULT"]
 BENCH_MODES = ["OFF", "ARMED", "FAULT"]
 POSTURES = ["UNKNOWN", "STANDING", "SITTING", "MOVING_TO_SIT", "MOVING_TO_STAND", "RETURNING_TO_STAND"]
 FAULTS = ["none", "overload", "over-temperature", "under-voltage", "servo status", "servo not answering",
-          "fall", "bus write", "position jump"]
+          "fall", "bus write", "position jump", "IMU lost while balancing"]
 RESULTS = ["ok", "firmware built without motion", "bad key", "joint table not calibrated", "servo missing",
            "IMU required", "fault latched", "not armed", "already armed", "wrong posture",
            "not at the STAND keyframe (call stand() first)", "facing uphill: sit refused", "busy", "bus error"]
 BUS_ERRORS = ["ok", "no reply", "bad reply", "wrong id", "refused by the safety gate", "bad argument"]
 FLAGS = {0: "non-finite target dropped", 1: "joint limit clamp", 2: "rate limit", 3: "head interlock",
          4: "leg rules (left)", 5: "leg rules (right)", 6: "knee x ankle", 7: "both legs",
-         8: "command timeout: holding", 9: "leg targets ignored", 10: "IMU stale", 11: "supported stand"}
+         8: "command timeout: holding", 9: "leg targets ignored", 10: "IMU stale", 11: "supported stand",
+         12: "the last sit / stand did not reach its pose"}
 
 
 _MISSING = -32768  # "not measured" in a reply, "no new target" in a request

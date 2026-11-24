@@ -60,7 +60,7 @@ struct DisplayInput {
   uint32_t ms_since_command;         // since it last sent a command (targets, step, heartbeat, arm ...); or kNever
   const char* message;               // text from the Linux side (duck_say), or nullptr
   uint32_t ms_since_message;         // since it was sent; kNever if never
-  BenchState bench;                  // a bench build's single servo (mode kOff otherwise)
+  BenchState bench;                  // a bench build's servo to show (mode kOff otherwise): shown_bench()
 };
 
 struct DisplayOutput {
@@ -68,6 +68,10 @@ struct DisplayOutput {
   uint8_t led3;                               // Rgb bits. LED3: the safety mode (magenta: one servo armed on a bench)
   uint8_t led4;                               // Rgb bits. LED4: the link with the Linux side
 };
+
+// Which of a bench's two servos the display speaks of. One that faulted for a reason of its own comes first (when
+// either stops, the other is stopped with BUS WRITE, which says nothing); then any fault; then one that is armed.
+BenchState shown_bench(const BenchState& first, const BenchState& second);
 
 void render_display(const DisplayInput& in, uint32_t now_ms, DisplayOutput* out);
 

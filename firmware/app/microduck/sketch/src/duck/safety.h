@@ -93,7 +93,10 @@ enum class Fault : uint8_t {
   kFall,           // trunk tilt far from the plan
   kBusWrite,       // a goal write was refused or failed
   kPositionJump,   // a servo's position changed faster than the servo can move
+  kImuLost,        // the IMU stopped reporting while the robot was balancing on it
 };
+// How many there are, for the tables that name them. Move it with the last one.
+constexpr int kFaultCount = static_cast<int>(Fault::kImuLost) + 1;
 
 // "This condition has been true for `seconds`". The first true sample starts the clock and never trips on its own,
 // even with a zero duration; a false sample stops it.

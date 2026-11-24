@@ -22,14 +22,19 @@ bool config_ready_for_motion(const RobotConfig& cfg) {
   return true;
 }
 
-int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg) {
+int16_t setpoint_to_step(const RobotConfig& cfg, int joint, float deg) {
   const JointConfig& j = cfg.joints[joint];
   if (!(deg == deg)) deg = 0.0f;  // NaN
-  deg = clampf(deg, j.min_deg, j.max_deg);  // min <= max: gen_config.py and joint_ready() check it
   long step = j.zero_step + j.direction * round_to_long(deg * cfg.servo.steps_per_deg);
   if (step < cfg.servo.step_min) step = cfg.servo.step_min;
   if (step > cfg.servo.step_max) step = cfg.servo.step_max;
   return static_cast<int16_t>(step);
+}
+
+int16_t deg_to_step(const RobotConfig& cfg, int joint, float deg) {
+  const JointConfig& j = cfg.joints[joint];
+  if (!(deg == deg)) deg = 0.0f;  // NaN
+  return setpoint_to_step(cfg, joint, clampf(deg, j.min_deg, j.max_deg));  // min <= max: joint_ready() checks it
 }
 
 float step_to_deg(const RobotConfig& cfg, int joint, int16_t step) {

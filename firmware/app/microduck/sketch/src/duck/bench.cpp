@@ -59,10 +59,10 @@ void BenchServo::disarm() {
 
 Result BenchServo::set_target(float deg, uint32_t now_ms) {
   if (mode_ != BenchMode::kArmed) return mode_ == BenchMode::kFault ? Result::kFaultLatched : Result::kNotArmed;
+  last_cmd_ms_ = now_ms;
   if (!finitef(deg)) return Result::kOk;  // a non-number moves nothing, but still counts as the Linux side talking
   uint16_t flags = 0;  // the bench reports no safety flags
   target_deg_ = clamp_joint(cfg_.joints[joint_], deg, &flags);
-  last_cmd_ms_ = now_ms;
   return Result::kOk;
 }
 
@@ -96,7 +96,9 @@ void BenchServo::tick(uint32_t now_ms, bool robot_armed) {
 
   uint16_t flags = 0;
   setpoint_deg_ = rate_limit(j, setpoint_deg_, target_deg_, dt, &flags);
-  const int16_t goal = deg_to_step(cfg_, joint_, setpoint_deg_);
+  // The setpoint, not its clamp: armed outside its limits the servo comes in at the speed limit (set_target clamps
+  // every target, so the setpoint only ever moves toward the limits).
+  const int16_t goal = setpoint_to_step(cfg_, joint_, setpoint_deg_);
   // One unanswered goal write is not a fault: on a real bus a reply is lost now and then (about one in a thousand
   // here, 2026-11-19), and the next tick writes the goal again. A write the bus's gate refused is: something else
   // closed it. So is a run of failures as long as the one that makes a servo "not answering".
