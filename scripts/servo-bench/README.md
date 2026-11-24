@@ -42,6 +42,37 @@ microcontroller firmware, so its joint limits, speed limit and faults apply. The
 | `bench_swing.py` | **Moves one servo.** A few slow swings between two angles, then mid-range and torque off: for seeing which servo has which ID, and for leaving a servo where its horn should be fitted. Bench build | RAM only |
 | `bench_follow.py` | **Moves one or two servos.** They follow the IMU's tilt, 50 times a second. Bench build, IMU running | RAM only |
 
+## Measuring the servo for its simulation model
+
+`duckd bench` ([runtime](../../runtime/README.md), bench checklist 8b) moves one servo through the firmware's
+bench mode and records it for trainnr. Two scripts go with it, both run on the PC:
+
+| Script | What it does |
+|---|---|
+| `bench_summary.py` | Reads such recordings and prints the read rate, the range, the top speed, the servo's speed report against its position, and for steps how fast it got there and where it rested |
+| `to_lerobot.py` | Writes a recording as a LeRobot dataset, which trainnr's servo fit accepts today (see step 4) |
+| `make_pendulum.py` | Writes the bench trainnr's `servo-bench` fit wants from three measurements: a one-hinge pendulum model and `bench.json` |
+
+A bare horn gives speed and timing, not torque. For torque the servo has to drive something whose inertia and
+weight are known:
+
+1. An arm about 100 mm from the servo's axis to a weight at its end, stiff and light, screwed to the horn. Weigh
+   the arm with the horn and screw, weigh the weight, measure the length.
+2. Clamp the servo with its axis horizontal, so the arm hangs straight down. With the torque off, where it comes to
+   rest is the joint's zero (`zero_step` of the bench joint).
+3. `duckd bench` with steps and with chirps, 12 s or more each, starting at rest.
+4. `make_pendulum.py` with the three numbers, the voltage the servo reported and its register 21;
+   `onboard_robot` the folder, `ingest_recording` each recording, `identify_system` with method `servo-bench`.
+   On 2026-11-24 that last call refuses any recording `duckd` writes ("no joint.command channel"): trainnr
+   reads the MCAP's `/joint_commands` under another name
+   ([Trainnr-AI/trainnr#147](https://github.com/Trainnr-AI/trainnr/issues/147)). Until that is fixed,
+   `to_lerobot.py` writes the same recording as a LeRobot dataset, a format in which trainnr does read the
+   command under the name the fit wants; three bare-horn recordings went in that way on 2026-11-24. The fit
+   itself has not been run on them.
+5. Again with a second and a third weight (trainnr asks for two or three), each as a bench of its own. About 30,
+   60 and 100 g at 100 mm load an SCS0009 with up to roughly an eighth, a quarter and four tenths of its rated
+   2.3 kg cm.
+
 ## Results
 
 `results/sweep-20261118-aa-pack.csv.gz`: the first powered run, 2026-11-18. One new SCS0009, a bare horn, four
@@ -82,3 +113,27 @@ fault. One at a time on the AA cells: 5.8 V at the lowest, peak drive 24 to 34 %
 nothing answered on the bus until the plugs had been pushed home again, and once a servo that had just moved was
 silent for 40 seconds and then answered; the IMU's Qwiic plug came loose the same afternoon. Which connection it
 was is not known.
+
+`duckd bench`, one servo with a bare horn, 2026-11-23: the first recordings for trainnr. Servo ID 15 as the bench
+joint `head_yaw` (narrowed to +-100 degrees and given a speed limit of 1000 deg/s on the board, so a step of the
+target reaches the servo as a step), goal speed 0, four AA cells reading 5.8 V with the servo at rest, 23 to
+25 C. Steps and chirps of +-5, +-15 and +-30 degrees, 12 to 14 s each, about 88 reads of the servo a second, no
+fault. They are in the trainnr project as `scs0009-bare-horn-steps-a5-2026-11-23@45236beb5a99`,
+`-steps-a15-...@1870401d7cd6`, `-steps-a30-...@bd03836aefcd`, `-chirp-a5-...@c27e25cf442b`,
+`-chirp-a15-...@a3a93b7f175c` and `-chirp-a30-...@12bd491ed9b1`. From `bench_summary.py`:
+
+| Jump of the target | 10 % covered after | 90 % after | Past the target | Rest, 0.48 s after |
+|---|---|---|---|---|
+| 10 degrees | 39 ms | 85 ms | none | 0.05 degrees off |
+| 30 degrees | 51 ms | 117 ms | 0.25 degrees | 0.35 degrees off |
+| 60 degrees | 60 ms | 162 ms | 0.5 degrees | 0.5 degrees off |
+
+Medians of 12 jumps each, timed from when `duckd` sent the target, so the link, the firmware's tick and its
+1000 deg/s limit on the goal are in them. Top speed on the 60 degree jumps: 557 deg/s by the servo's own report,
+about 700 by its positions (read stamps of 1 ms make that one noisy). The servo's speed report is 0.91 to 0.94 of
+the speed its positions give on the larger moves, so the firmware reads register 58 in the right unit (steps/s).
+Its registers 21 to 27 read 15, 15, 0, 0, 45, 1, 1; by Feetech's library header for this family those are the position
+loop's P, D and I, the smallest drive, and the dead band each way (read only; not checked by changing them). **No torque follows from any of this**: with
+nothing on the horn there is nothing known to push against, so no model was fitted. One call in the second run
+came back garbled and `duckd bench` stopped half a second early; since then it passes over a single failed
+exchange (four of about 9,400 that day).

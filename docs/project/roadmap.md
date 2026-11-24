@@ -30,8 +30,9 @@ Status on 2026-11-18. Ordered by what blocks what, not by date.
 2. **One servo on the bench.** Confirm steps per degree, the protection registers and the adapter at 5 V; record
    telemetry (`duckd run --record`) and fit an actuator model for the SCS0009. Nothing trained before this is
    trustworthy. A bench build (`DUCK_BENCH_MOTION 1`, off by default) and `duckd bench`
-   move and record one servo on its own; untested with a servo. What stands in the way: trainnr has no method that
-   fits a servo model from a recording ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)).
+   move and record one servo on its own (first recordings 2026-11-23, bare horn). trainnr fits a servo model from
+   such a recording since 2026-11-22; what stands in the way is a pendulum of known mass and length on the horn
+   ([scripts/servo-bench](../../scripts/servo-bench/README.md)).
 3. **Feed the policy runner.** It reads trainnr's exports (`trainnr-deploy/1`) as they are; the pipeline from
    trainnr to `duckd` is checked end to end on Pollen's microduck ([sim-to-real.md](../design/sim-to-real.md)). The Rust runtime can load a policy, check it against the robot and run it in the
    loop (0.48 ms per inference on the board; about 7 ms per tick with the exchange). The gyro is in the
@@ -43,6 +44,26 @@ Status on 2026-11-18. Ordered by what blocks what, not by date.
    pass the deployment gate. Then sit/stand, then get-up, which may need stronger servos.
 6. **Publish the hardware files** once permission for the XGO-Duck-derived shells is confirmed
    (`LICENSE-MODELS.md`).
+
+## The pet: what it should do (direction set 2026-11-23)
+
+With the camera as its only sense of the world (a microphone and a speaker come with the next version): look at
+people and things, walk fast to a toy and catch it, sit and stand, throw a tantrum, struggle when picked up. In
+the order things can be had:
+
+| What | Needs | State |
+|---|---|---|
+| Find a coloured toy: direction and distance | the camera | `duckd see` runs on the board; no toy tracked yet |
+| Look at it with the head | the head's four servos | one servo on the bench does it (`duckd pet`, not yet run) |
+| Feel a hand: struggle when held, give up, calm down | nothing but the servos | the same, for one joint |
+| Being picked up: struggle in the air | the assembled robot; the firmware must tell held from falling (today a tilt past 30 degrees switches everything off) | not started |
+| Walk to the toy, fast | a walk that follows its command ([sim-to-real.md](../design/sim-to-real.md)); the SCS0009's measured model | three runs, none follows its command. The simulated robot tops out near 0.19 m/s whatever it is asked, and under commands that small the walk's reward pays for standing still ([Trainnr-AI/trainnr#146](https://github.com/Trainnr-AI/trainnr/issues/146)) |
+| Look around while walking | a walk trained with the head moved from outside: [Trainnr-AI/trainnr#145](https://github.com/Trainnr-AI/trainnr/issues/145) | asked for upstream |
+| Sit, stand, stamp, tantrum | trained motions for our robot: [Trainnr-AI/trainnr#144](https://github.com/Trainnr-AI/trainnr/issues/144) (trainnr tracks motions for one humanoid only) | asked for upstream; the firmware's scripted sit and stand exist, untried on a robot |
+| Faces and people | a small detector on real frames (timed on random inputs only: [uno-q-compute.md](uno-q-compute.md)) | not started |
+
+Not possible with one camera: the distance to anything whose size is not known, and edges. The robot stays on
+the floor.
 
 ## Open questions
 

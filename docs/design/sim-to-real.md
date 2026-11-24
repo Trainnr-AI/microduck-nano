@@ -1,7 +1,7 @@
 # The sim-to-real pipeline
 
 How a walking policy gets from simulation to the robot, through trainnr (used through its MCP tools only) and this
-repository's runtime. Status on 2026-11-22.
+repository's runtime. Status on 2026-11-23.
 
 trainnr project: `microduck-nano` (under trainnr's data folder, not in this repository). The robot is onboarded from
 the design repository's `sim/scene_scs0009_v2.xml` with this repository's `limits.json` beside it (below): as
@@ -32,15 +32,15 @@ in training the episode ends instead.
 | Stage | trainnr tool | Here | Status |
 |---|---|---|---|
 | 1. Robot model | `onboard_robot` | | done: 16 bodies, 15 joints, 14 actuators; the names a walk needs (`trunk_base`, `left_foot` / `right_foot` sites, `*_foot_collision`, `imu` with a gyro) |
-| 2. Telemetry | `ingest_recording` (MCAP) | `duckd run --record`, `duckd bench --record` | works from the real board: `board-at-rest-2026-11-22@8c0bbb7927db` (20 s, nothing armed, one servo on the bus: joint positions and speeds at 50 Hz; no IMU messages, because the firmware reports no IMU until its mounting matrix is set). No moving servo recorded yet |
-| 3. Actuator model (SCS0009) | `identify_system`, method `servo-bench` | bench checklist 8b | open on our side: trainnr fits a servo's model from a bench recording since 2026-11-22 ([trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)). It wants one servo driving an arm of known mass and length, its commanded and measured position, steps and chirps, 12 s or more a recording, two or three arm masses. No such recording has been made yet |
+| 2. Telemetry | `ingest_recording` (MCAP) | `duckd run --record`, `duckd bench --record` | works from the real board: `board-at-rest-2026-11-22@8c0bbb7927db` (20 s, nothing armed, one servo on the bus: joint positions and speeds at 50 Hz; no IMU messages, because the firmware reports no IMU until its mounting matrix is set). Since 2026-11-23 also one servo moving on the bench: six recordings of an SCS0009 with a bare horn, steps and chirps (`scs0009-bare-horn-steps-a30-2026-11-23@bd03836aefcd` and five beside it; [what they show](../../scripts/servo-bench/README.md)) |
+| 3. Actuator model (SCS0009) | `identify_system`, method `servo-bench` | bench checklist 8b | what is known without a fit is in [scs0009.md](../project/scs0009.md): the model's actuators are Feetech's datasheet at 5 V, and one servo's measured speed is within 4 % of it. Open on our side: trainnr fits a servo's model from a bench recording since 2026-11-22 ([trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)). It wants one servo driving an arm of known mass and length, its commanded and measured position, steps and chirps, 12 s or more a recording, two or three arm masses. The recording side works since 2026-11-23 (`duckd bench`, bare horn); with nothing on the horn there is no torque to fit, so the arm is what is missing. `scripts/servo-bench/make_pendulum.py` writes the bench from the arm's measurements. Tried on 2026-11-24 with the bare horn as its own bench (`scs0009-bench-bare-horn@d7f0cdfb324e`): `identify_system` refused the recording, because trainnr reads an MCAP's `/joint_commands` under another name than the fit looks for ([trainnr#147](https://github.com/Trainnr-AI/trainnr/issues/147)). A fit of an unloaded servo with the datasheet's stall torque declared is asked for as [trainnr#148](https://github.com/Trainnr-AI/trainnr/issues/148) |
 | 4. Walk environment | `create_task`, family `trainnr/legged-walk` | | done: `nano-walk` (`legged-walk@091af4e9f626`): our robot, the model's own actuators (`actuator: model`, recorded by trainnr as declared, not identified), neck and head held at the stand pose, the ten leg joints driven, the limits ending episodes. `check_task` accepted it ([trainnr#100](https://github.com/Trainnr-AI/trainnr/issues/100), fixed 2026-11-22) |
-| 5. Train | `train_walk` | | first run done 2026-11-23: experiment `nano-walk-01@1152cce0df90` (8,000 iterations, 6 h 41 min on an RTX 3090 Ti with other work sharing it). It trained on a servo nobody has measured, so it shows that the pipeline carries our robot, not that the robot will walk. On a Mac's CPU a full run would take about 12 days |
+| 5. Train | `train_walk` | | blocked on the walk's reward ([trainnr#146](https://github.com/Trainnr-AI/trainnr/issues/146), below). First run done 2026-11-23: experiment `nano-walk-01@1152cce0df90` (8,000 iterations, 6 h 41 min on an RTX 3090 Ti with other work sharing it). It trained on a servo nobody has measured, so it shows that the pipeline carries our robot, not that the robot will walk. On a Mac's CPU a full run would take about 12 days |
 | 6. Evaluate | `evaluate_walk` | | done for that run's last checkpoint: `nano-walk-01-model_7999-cuda-seed1000-n40-pba3716@5d75216b5c88`. It stayed up in 40 of 40 trials and tracked the command in none, so 0 of 40 are a success (95 % interval 0 to 0.09). Not a policy to deploy; stages 7 to 9 have not been run on it |
 | 7. Export | `export_deployment` | | works: `policy.onnx` + `deploy.json` (`trainnr-deploy/1`) |
 | 8. Sim-to-sim gate | `gate_deployment` (runtime `mujoco`) | | works; passes only a policy whose evaluation demonstrated a success ([trainnr#108](https://github.com/Trainnr-AI/trainnr/issues/108), fixed upstream 2026-11-15; needs a trainnr plugin from after that date) |
 | 9. Preflight | `preflight_deployment` | | works: refused the pipeline-check policy for targets 1.5 rad past a joint's range, as it should |
-| 10. On the robot | | `duckd run --policy DEPLOYMENT [--command FORWARD,SIDEWAYS,TURN]` | `duckd` reads the export as trainnr wrote it; on the board 0.40 ms per inference. The command is refused outside the ranges the policy was trained on. The firmware's own limits, interlocks and faults stay underneath |
+| 10. On the robot | | `duckd run --policy DEPLOYMENT [--command FORWARD,SIDEWAYS,TURN] [--listen DEVICE]` | `duckd` reads the export as trainnr wrote it; on the board 0.40 ms per inference. The command is refused outside the ranges the policy was trained on. The firmware's own limits, interlocks and faults stay underneath |
 | 11. Drift | `check_drift` | `duckd run --record` | ready once 2 has real data |
 
 ## 2026-11-22: our robot trains
@@ -77,6 +77,45 @@ in training the episode ends instead.
   runs on the joints the model has); not tried here yet. It will matter when the assembled robot is recorded
   moving.
 
+## 2026-11-23: towards a walk that follows its command
+
+- **A second run asks for less.** The first run covered half the distance its command asked for. To tell a robot
+  that cannot go faster from a reward that does not make it, the task `nano-walk-half` (`legged-walk@1092bd21b650`)
+  is the same walk with every command range halved (forward +-0.2 m/s, sideways +-0.15 m/s, turning +-0.5 rad/s),
+  and the run `nano-walk-02-half@c80ea7edfae7` trained it for 2,300 iterations (57 minutes with the GPU to
+  itself).
+- **It stands still, and is paid for it.** Asked for 0.2 m/s, every checkpoint from iteration 250 on stays on its
+  feet for the 10 s of its film and covers 0.01 to 0.04 m. Evaluation
+  `nano-walk-02-half-model_2299-cuda-seed1000-n40-pdb7565@6c87487c70b4`: stayed up in 40 of 40 trials, tracked
+  the command in none, median error as large as the command itself. Its tracking reward in training is higher
+  than the first run's. So it is the reward, not the robot: trainnr's walk pays `exp(-error^2 / 0.1)` for forward
+  and sideways speed, a tolerance of 0.32 m/s taken from Pollen's microduck and not a setting. Standing still
+  under a 0.2 m/s command earns two thirds of it; so does walking at 0.2 m/s under a 0.4 m/s command, which is
+  where the first run settled. Reported as [trainnr#146](https://github.com/Trainnr-AI/trainnr/issues/146). Until
+  that tolerance can be set, or follows the command range, more training of this walk will not give a robot that
+  goes where it is told, and all that is known of this robot's speed is that the simulated one managed 0.19 m/s
+  when nothing asked more of it.
+- **A third run is only ever asked to go forward fast.** If standing still pays under small commands, a task
+  that never gives one cannot be satisfied by standing: `nano-walk-fast` (`legged-walk@768f0d96cc36`) asks for
+  0.3 to 0.6 m/s forward (sideways +-0.1 m/s, turning +-1 rad/s), on the model's actuators, which are Feetech's
+  datasheet at 5 V ([scs0009.md](../project/scs0009.md)), with `dr_span: 0.03` set and without effect
+  ([trainnr#150](https://github.com/Trainnr-AI/trainnr/issues/150)). The run is `nano-walk-03-fast@f732e105c32c`, 2,300
+  iterations. A policy from it cannot be asked to stand still.
+- **It tops out at 0.19 m/s, whatever it is asked.** Asked for 0.6 m/s, the third run's checkpoints from
+  iteration 1,500 on cover 1.7 to 1.9 m in 10 s: the same 1.9 m the first run covered when asked for 0.4 m/s.
+  Evaluation `nano-walk-03-fast-model_2299-cuda-seed1000-n40-p41878d@f66d94cd14a9`: stayed up in 40 of 40,
+  tracked in none, median error two thirds of the command. Under a 0.6 m/s command the reward pays little for
+  0.19 m/s and would pay much more for going faster, and training still stopped there, so this is a ceiling of the
+  simulated robot under this walk's terms and not laziness. That corrects the reading of the first run above:
+  its half speed was this ceiling, not the tolerance. What sets it is not known: the servo's 500 deg/s and
+  0.19 N m, the stride the limits allow, or the walk's own gait terms (the foot's time in the air, the pose it is
+  held near), which are also Pollen's microduck's. The tolerance still explains the second run (it stands), and
+  a walk that goes where it is told inside 0 to 0.2 m/s still needs trainnr#146.
+- **What trainnr cannot train for this robot yet**, both asked for upstream: a reference motion (sit, stand, a
+  stamp: [trainnr#144](https://github.com/Trainnr-AI/trainnr/issues/144); its tracking is for one humanoid), and
+  a walk during which something else moves the head
+  ([trainnr#145](https://github.com/Trainnr-AI/trainnr/issues/145)).
+
 ### What it looks like
 
 Taken on 2026-11-22 while `nano-walk-01@1152cce0df90` was at about iteration 3,550 of 8,000. Everything here is
@@ -105,6 +144,13 @@ take that pose as written.
 ![The project's overview](../images/trainnr/studio-overview.png)
 
 The project's overview: which stages of the pipeline have something in them. "Sys ID" is the open one (stage 3).
+
+## Sound
+
+The policy does not hear, and is not meant to: trainnr simulates no sound, so a policy trained there could not have
+learnt to. Sound picks the command instead. `duckd run --listen DEVICE` starts with the policy asked for nothing
+and switches to `--command` and back on two claps ([runtime](../../runtime/README.md), "Hearing"). Written and
+tested on made-up sound on 2026-11-23; the robot has no microphone yet, so it has never heard anything.
 
 ## What matches already
 

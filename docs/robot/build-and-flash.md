@@ -30,7 +30,10 @@ From Arduino's documentation, relevant to this build:
   OpenCV for Python are not. **The unit shows no microphone**: its USB description has video interfaces only and no
   sound card appears, although the design's parts list counts on the camera's microphone. Waveshare's own pages for
   this model list no microphone either (and no indicator light: nothing on the camera lit while it streamed), so
-  the robot has no microphone as designed.
+  the robot has no microphone as designed. Read again on 2026-11-23 with the camera straight on the board's port:
+  two interfaces, video control and video streaming. The board's kernel has the USB sound driver
+  (`snd-usb-audio`), so a USB microphone or a camera that has one should appear as a sound card; none has been
+  tried. `duckd listen` is what will read it ([runtime](../../runtime/README.md), "Hearing").
 - The same UART that drives D1 is the microcontroller's boot console. Whether it prints anything at start-up that a servo
   could read as a command has not been checked (bench checklist, step 4).
 

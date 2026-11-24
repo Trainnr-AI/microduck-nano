@@ -56,7 +56,10 @@ are powered.
    the servo was told: fit against these), and every read of the servo (position, its own speed report), stamped
    when it was read. Check the speed report's unit with them: the servo's speed against the change of its position
    between reads (`duck_state` and the policy take register 58 as steps/s; if it is not, fix `speed_to_dps` in
-   `robot_config.cpp` before any policy runs). trainnr cannot yet fit a servo model from them ([Trainnr-AI/trainnr#101](https://github.com/Trainnr-AI/trainnr/issues/101)); keep them.
+   `robot_config.cpp` before any policy runs). Done once, 2026-11-23, bare horn: the unit is right
+   ([results](../../scripts/servo-bench/README.md)). For trainnr to fit the servo's model from the recordings the
+   load has to be a pendulum whose length and masses you measured: the same page has the steps, and
+   `scripts/servo-bench/bench_summary.py` reads a recording back.
 
 **C. Provisioning, one servo at a time (provisioning build: `DUCK_ENABLE_EEPROM_WRITE 1`)**
 
