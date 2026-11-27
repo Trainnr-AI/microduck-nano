@@ -25,7 +25,7 @@ namespace {
 constexpr int32_t kRefused = 255;
 
 bool provisioning_ok(uint32_t key) {
-  return key == duck::kArmKey && g_ctl.status().mode == duck::Mode::kDisarmed && g_bench.idle() && g_bench2.idle();
+  return key == duck::kArmKey && g_ctl.status().mode == duck::Mode::kDisarmed && bench_idle();
 }
 
 // Writes one joint's angle limits (from the joint table) into its servo and reads them back.

@@ -1287,6 +1287,77 @@ static void test_torque_off_is_repeated_after_a_disarm_and_a_failed_arm() {
   }
 }
 
+// A set of bench servos: armed whole or not at all; each inside its own limits; one fault stops them all.
+static void test_bench_set_moves_together_and_stops_together() {
+  RobotConfig c = kRobotConfig;
+  const int joints[3] = {kLKnee, kLAnkle, kLHipRoll};
+  for (int j = 0; j < kNumJoints; ++j) c.joints[j].servo_id = kServoIdUnassigned;
+  FakeBus fake;
+  ScsBus bus(fake);
+  uint32_t mask = 0;
+  for (int k = 0; k < 3; ++k) {
+    const int j = joints[k];
+    c.joints[j].servo_id = static_cast<uint8_t>(20 + k);
+    c.joints[j].calibrated = true;
+    fake.add(20 + k);
+    fake.servo[20 + k].set_position(static_cast<uint16_t>(setpoint_to_step(c, j, 0.0f)));
+    mask |= 1u << j;
+  }
+  BenchSet set(c, bus, true);
+  uint32_t now = 1000;
+  CHECK(set.idle() && !set.armed());
+  // A joint with no servo ID in the set: nothing is armed, and nothing is left with torque.
+  CHECK(set.arm(kArmKey, mask | (1u << kRKnee), now) != Result::kOk);
+  CHECK(set.idle() && !fake.servo[20].torque() && !fake.servo[21].torque() && !fake.servo[22].torque());
+  CHECK(set.arm(kArmKey + 1, mask, now) == Result::kBadKey && set.idle());
+  CHECK(set.arm(kArmKey, 0, now) != Result::kOk);
+
+  CHECK(set.arm(kArmKey, mask, now) == Result::kOk);
+  CHECK(set.armed() && fake.servo[20].torque() && fake.servo[21].torque() && fake.servo[22].torque());
+  CHECK(set.arm(kArmKey, mask, now) == Result::kAlreadyArmed);
+  float deg[kNumJoints];
+  for (int j = 0; j < kNumJoints; ++j) deg[j] = NAN;
+  deg[kLKnee] = 5.0f;
+  deg[kLAnkle] = -5.0f;
+  deg[kLHipRoll] = 500.0f;  // far outside: it stops at the joint's limit
+  for (int i = 0; i < 300; ++i) {
+    now += 10;
+    CHECK(set.set_targets(deg, now) == Result::kOk);
+    set.tick(now, false);
+  }
+  CHECK(set.armed());
+  CHECK_NEAR(step_to_deg(c, kLKnee, static_cast<int16_t>(fake.servo[20].position())), 5.0f, 0.4f);
+  CHECK_NEAR(step_to_deg(c, kLAnkle, static_cast<int16_t>(fake.servo[21].position())), -5.0f, 0.4f);
+  CHECK_NEAR(step_to_deg(c, kLHipRoll, static_cast<int16_t>(fake.servo[22].position())), c.joints[kLHipRoll].max_deg, 0.4f);
+  CHECK(set.state(kLKnee).mode == BenchMode::kArmed && set.state(kRKnee).mode == BenchMode::kOff);
+
+  // One servo stops answering: it faults, and the others stop with it. Nothing has torque.
+  fake.servo[21].present = false;
+  for (int i = 0; i < 40; ++i) {
+    now += 10;
+    set.set_targets(deg, now);
+    set.tick(now, false);
+  }
+  CHECK(!set.armed() && !set.idle());
+  CHECK(set.state(kLAnkle).mode == BenchMode::kFault && set.state(kLAnkle).fault == Fault::kComm);
+  CHECK(set.state(kLKnee).mode == BenchMode::kFault && set.state(kLKnee).fault == Fault::kBusWrite);
+  CHECK(set.shown().joint == kLAnkle);  // the display names the one that failed, not the ones that followed
+  CHECK(!fake.servo[20].torque() && !fake.servo[22].torque());
+  CHECK(set.arm(kArmKey, mask, now) == Result::kFaultLatched);
+  set.disarm();
+  CHECK(set.idle());
+
+  // The Linux side goes quiet: the whole set goes limp, with no fault.
+  fake.add(21);
+  CHECK(set.arm(kArmKey, mask, now) == Result::kOk);
+  for (int i = 0; i < 200; ++i) {
+    now += 10;
+    set.tick(now, false);
+  }
+  CHECK(!set.armed());
+  CHECK(!fake.servo[20].torque() && !fake.servo[21].torque() && !fake.servo[22].torque());
+}
+
 static void test_the_display_speaks_of_the_right_bench_servo() {
   BenchState off, armed, faulted, stopped;
   off.mode = BenchMode::kOff; off.fault = Fault::kNone; off.joint = -1; off.setpoint_deg = 0.0f;
@@ -1973,6 +2044,7 @@ int main(int argc, char** argv) {
   RUN(test_a_faulted_robot_still_reports_where_its_joints_are);
   RUN(test_losing_the_imu_while_balancing_is_a_fault);
   RUN(test_torque_off_is_repeated_after_a_disarm_and_a_failed_arm);
+  RUN(test_bench_set_moves_together_and_stops_together);
   RUN(test_the_display_speaks_of_the_right_bench_servo);
   RUN(test_a_failed_id_change_does_not_leave_the_memory_open);
   RUN(test_gyro_in_status);

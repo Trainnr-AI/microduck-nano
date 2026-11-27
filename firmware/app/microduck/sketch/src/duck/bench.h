@@ -73,4 +73,33 @@ class BenchServo {
   uint32_t off_ticks_ = kOffRepeatTicks;  // ticks since it switched off; nothing to repeat before the first arm
 };
 
+// Several servos moved together on a bench, each under the rules of BenchServo: one slot per joint, each with its
+// own limits, speed limit, fault checks and command timeout. They share the bus, so a stop of any one (a fault, the
+// Linux side going quiet) switches every servo off and closes the bus's motion gate; the others' next goal write is
+// refused and they stop too. A set is armed whole or not at all.
+class BenchSet {
+ public:
+  BenchSet(const RobotConfig& cfg, ScsBus& bus, bool enabled);
+
+  // Arm every joint whose bit is set in `mask` (bit j = joint j). All of them, or none: the first refusal switches
+  // off the ones already armed and is returned. Needs every slot off with no fault latched.
+  Result arm(uint32_t key, uint32_t mask, uint32_t now_ms);
+  // Torque off, every slot, and forget latched faults.
+  void disarm();
+  // One target per joint, degrees; a slot that is not armed ignores its own. A non-number moves nothing but counts
+  // as the Linux side talking. The worst refusal among the armed-or-faulted slots is returned.
+  Result set_targets(const float* deg, uint32_t now_ms);
+  // Every control tick. `bus_in_use`: the robot or another bench servo is armed.
+  void tick(uint32_t now_ms, bool bus_in_use);
+
+  bool armed() const;  // any slot armed
+  bool idle() const;   // every slot off with no fault latched
+  BenchState state(int joint) const { return slot_[joint].state(); }
+  // The one slot worth showing: a real fault before a stop that followed another's, before an armed one.
+  BenchState shown() const;
+
+ private:
+  BenchServo slot_[kNumJoints];
+};
+
 }  // namespace duck

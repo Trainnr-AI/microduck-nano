@@ -121,4 +121,75 @@ BenchState BenchServo::state() const {
   return s;
 }
 
+#define DUCK_BENCH_SLOT {cfg, bus, enabled}
+BenchSet::BenchSet(const RobotConfig& cfg, ScsBus& bus, bool enabled)
+    : slot_{DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT,
+            DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT,
+            DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT, DUCK_BENCH_SLOT} {
+  static_assert(kNumJoints == 15, "one DUCK_BENCH_SLOT per joint");
+}
+#undef DUCK_BENCH_SLOT
+
+Result BenchSet::arm(uint32_t key, uint32_t mask, uint32_t now_ms) {
+  if (!idle()) return armed() ? Result::kAlreadyArmed : Result::kFaultLatched;
+  if (mask == 0 || (mask >> kNumJoints) != 0) return Result::kNotCalibrated;  // no joint, or one the table has not
+  for (int j = 0; j < kNumJoints; ++j) {
+    if (!(mask & (1u << j))) continue;
+    const Result r = slot_[j].arm(key, j, now_ms);
+    if (r != Result::kOk) {
+      disarm();
+      return r;
+    }
+  }
+  return Result::kOk;
+}
+
+void BenchSet::disarm() {
+  for (BenchServo& s : slot_) s.disarm();
+}
+
+Result BenchSet::set_targets(const float* deg, uint32_t now_ms) {
+  Result worst = Result::kOk;
+  for (int j = 0; j < kNumJoints; ++j) {
+    if (slot_[j].idle()) continue;
+    const Result r = slot_[j].set_target(deg[j], now_ms);
+    if (r != Result::kOk) worst = r;
+  }
+  return worst;
+}
+
+void BenchSet::tick(uint32_t now_ms, bool bus_in_use) {
+  int armed_now = 0;
+  for (const BenchServo& s : slot_) armed_now += s.armed() ? 1 : 0;
+  for (BenchServo& s : slot_) s.tick(now_ms, bus_in_use || armed_now > (s.armed() ? 1 : 0));
+}
+
+bool BenchSet::armed() const {
+  for (const BenchServo& s : slot_) {
+    if (s.armed()) return true;
+  }
+  return false;
+}
+
+bool BenchSet::idle() const {
+  for (const BenchServo& s : slot_) {
+    if (!s.idle()) return false;
+  }
+  return true;
+}
+
+BenchState BenchSet::shown() const {
+  BenchState best = slot_[0].state();
+  int rank = -1;
+  for (const BenchServo& s : slot_) {
+    const BenchState b = s.state();
+    const int r = b.mode == BenchMode::kFault ? (b.fault != Fault::kBusWrite ? 3 : 2) : b.mode == BenchMode::kArmed ? 1 : 0;
+    if (r > rank) {
+      rank = r;
+      best = b;
+    }
+  }
+  return best;
+}
+
 }  // namespace duck

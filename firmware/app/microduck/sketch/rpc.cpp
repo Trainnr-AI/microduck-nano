@@ -278,14 +278,13 @@ int32_t rpc_heartbeat() {
 int32_t rpc_arm(uint32_t key) {
   note_command();
   // A bench servo has torque, or a bench fault is latched: clear it with duck_disarm first.
-  if (!g_bench.idle() || !g_bench2.idle()) return code(duck::Result::kBusy);
+  if (!bench_idle()) return code(duck::Result::kBusy);
   return code(g_ctl.arm(key, millis(), g_imu));
 }
 
 int32_t rpc_disarm() {
   note_command();
-  g_bench.disarm();
-  g_bench2.disarm();
+  bench_disarm();
   g_ctl.disarm();
   return 0;
 }

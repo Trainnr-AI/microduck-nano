@@ -37,6 +37,7 @@ duck::ScsBus g_bus(g_uart);
 duck::Controller g_ctl(g_config, g_bus, DUCK_ENABLE_MOTION != 0);
 duck::BenchServo g_bench(g_config, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
 duck::BenchServo g_bench2(g_config, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
+duck::BenchSet g_bench_set(g_config, g_bus, DUCK_ENABLE_MOTION != 0 && DUCK_BENCH_MOTION != 0);
 duck::ImuSample g_imu = {{0.0f, 0.0f, 1.0f}, false, 0, {0.0f, 0.0f, 0.0f}, false, 0};
 bool g_imu_present = false;
 uint32_t g_tick_us_max = 0;
@@ -60,7 +61,7 @@ void loop() {
 
   // An IMU that was unplugged or not ready when the board started is picked up later, but only while nothing is
   // armed: starting it blocks for about half a second.
-  if (!g_imu_present && g_ctl.status().mode == duck::Mode::kDisarmed && !g_bench.armed() && !g_bench2.armed()) {
+  if (!g_imu_present && g_ctl.status().mode == duck::Mode::kDisarmed && !bench_armed()) {
     g_imu_present = imu_retry(now);
   }
 
@@ -84,8 +85,10 @@ void loop() {
     // so the other one's next goal write is refused and it stops too: any stop stops both. While one is armed the
     // other must not repeat its own "torque off", so each is told when the bus is in use by the other.
     const bool robot_armed = g_ctl.status().mode == duck::Mode::kArmed;
-    g_bench.tick(now, robot_armed || g_bench2.armed());
-    g_bench2.tick(now, robot_armed || g_bench.armed());
+    const bool set_armed = g_bench_set.armed();
+    g_bench.tick(now, robot_armed || g_bench2.armed() || set_armed);
+    g_bench2.tick(now, robot_armed || g_bench.armed() || set_armed);
+    g_bench_set.tick(now, robot_armed || g_bench.armed() || g_bench2.armed());  // the same rule, for a set of them
     status_display_update(now);  // counted in the worst tick: the display must not cost the control loop
     const uint32_t dt = micros() - t0;
     if (dt > g_tick_us_max) g_tick_us_max = dt;
