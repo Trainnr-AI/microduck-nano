@@ -103,6 +103,11 @@ What it cannot give yet: joint velocity and torque (the firmware reports neither
 and the time each servo was read (messages carry the time `duckd` received the state). Armed, the firmware reads
 every joint at 50 Hz (8 servos a 10 ms tick); disarmed, one servo every 100 ms, so a disarmed recording is slow.
 
+For several servos at once, `duckd bench-set --joints NAME,NAME,... --supervised [--excite steps] [--amplitude 10]`
+arms them together (all or none), swings each around where it is, and prints the lowest voltage and highest load
+each one read: a test of the supply and the wiring, not of the servo
+([what it found](../docs/project/bench-test-2026-11-27.md)).
+
 For one servo on the bench, `duckd bench --joint NAME --supervised [--excite chirp|steps] [--amplitude 10]
 [--record FILE.mcap]` does better: with a bench build of the firmware (`DUCK_BENCH_MOTION 1`) it arms that joint
 alone, moves it around where it was (faded in and out), switches it off at the end or on Ctrl-C, and records the
@@ -120,11 +125,14 @@ off by itself. First used with a servo on 2026-11-23 (one SCS0009, a bare horn: 
 
 ## Seeing
 
-`duckd see [--device /dev/video0] [--colour U,V] [--ball-mm 40] [--fov 60 | --at-mm 300]` looks for one coloured
+`duckd see [--device auto] [--colour U,V] [--ball-mm 40] [--fov 60 | --at-mm 300]` looks for one coloured
 thing and prints, twice a second, the frame rate, its direction (degrees to the left of and above where the camera
 points), its size in the picture and, for a ball of known size, its distance. Without `--colour` it takes the
 colour in the middle of the picture: hold the toy in front of the camera once and keep the `--colour` it prints.
 `--at-mm` with the ball held at that distance measures the lens instead of assuming 60 degrees.
+The camera is found by itself: the first video device that offers uncompressed (YUYV) frames, since its number
+changes from one start of the board to the next. `--device /dev/videoN` names one, and is refused if it is not a
+camera.
 
 A colour, not a trained detector, because it is the cheapest thing that gives a direction: the frames come
 uncompressed (YUYV, 320 x 240) from `v4l2-ctl` as a child process, and in that format a pixel's colour is two bytes

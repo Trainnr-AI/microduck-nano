@@ -284,7 +284,137 @@ pub fn bench_step<S: Read + Write>(bridge: &mut Bridge<S>, target: Option<f64>) 
     })
 }
 
+/// One joint of a set of bench servos armed together (bench build only; `duck_benchset_step`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetJoint {
+    /// "OFF", "ARMED" or "FAULT".
+    pub mode: &'static str,
+    pub fault: &'static str,
+    /// The servo answered its last read.
+    pub answered: bool,
+    /// Where the servo was at its last read, radians; `None` if this joint was never armed in the set.
+    pub position: Option<f64>,
+    pub voltage: f64,
+    /// A duty cycle in percent, signed in the joint's direction. Not a torque.
+    pub load_percent: f64,
+}
+
+/// The set's reply: what the firmware did with the targets, and every joint's slot, firmware order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchSet {
+    pub result: &'static str,
+    pub joints: Vec<SetJoint>,
+}
+
+impl BenchSet {
+    pub fn armed(&self) -> usize {
+        self.joints
+            .iter()
+            .filter(|j| j.mode == BENCH_MODES[1])
+            .count()
+    }
+}
+
+fn parse_bench_set(v: &[i64]) -> Result<BenchSet, BridgeError> {
+    let shape = BridgeError::Shape("bench-set reply is not one word and four per joint");
+    let Some((&result, rest)) = v.split_first() else {
+        return Err(shape);
+    };
+    let (slots, extra) = rest.as_chunks::<4>();
+    if slots.is_empty() || !extra.is_empty() {
+        return Err(shape);
+    }
+    let joints = slots
+        .iter()
+        .map(|&[state, position, voltage, load]| SetJoint {
+            mode: name(&BENCH_MODES, state & 15),
+            fault: name(&FAULTS, (state >> 4) & 255),
+            answered: state & 4096 != 0,
+            position: radians(position),
+            voltage: voltage as f64 / 10.0,
+            load_percent: load as f64 / 10.0,
+        })
+        .collect();
+    Ok(BenchSet {
+        result: name(&RESULTS, result),
+        joints,
+    })
+}
+
+/// Arm a set of joints together (bench build): bit j of `mask` is joint j. All of them or none.
+pub fn benchset_arm<S: Read + Write>(
+    bridge: &mut Bridge<S>,
+    mask: u32,
+) -> Result<Result<(), &'static str>, BridgeError> {
+    let result = bridge.call_int(
+        "duck_benchset_arm",
+        vec![Value::from(ARM_KEY), Value::from(mask)],
+    )?;
+    Ok(if result == 0 {
+        Ok(())
+    } else {
+        Err(name(&RESULTS, result))
+    })
+}
+
+/// Send the set's targets (radians, one per joint, firmware order; `None`: no new target) and get every slot back.
+pub fn benchset_step<S: Read + Write>(
+    bridge: &mut Bridge<S>,
+    targets: &[Option<f64>],
+) -> Result<BenchSet, BridgeError> {
+    let words = targets
+        .iter()
+        .map(|t| Value::from(t.filter(|t| t.is_finite()).map_or(MISSING, tenths)))
+        .collect();
+    parse_bench_set(&bridge.call_ints("duck_benchset_step", vec![Value::Array(words)])?)
+}
+
 /// Torque off on the bench servo and forget a latched bench fault.
 pub fn bench_disarm<S: Read + Write>(bridge: &mut Bridge<S>) -> Result<(), BridgeError> {
     bridge.call_int("duck_bench_disarm", vec![]).map(drop)
+}
+
+#[cfg(test)]
+mod bench_set_tests {
+    use super::*;
+
+    #[test]
+    fn a_set_reply_is_read_joint_by_joint() -> Result<(), BridgeError> {
+        // result ok; joint 0 armed and answering at 12.3 degrees, 4.9 V, load -5 %; joint 1 off, never armed;
+        // joint 2 faulted on a bus write.
+        let v = [
+            0,
+            1 + 4096,
+            123,
+            49,
+            -50,
+            0,
+            MISSING,
+            0,
+            0,
+            2 + 16 * 7,
+            -20,
+            48,
+            0,
+        ];
+        let set = parse_bench_set(&v)?;
+        assert_eq!((set.result, set.joints.len(), set.armed()), ("ok", 3, 1));
+        let [first, second, third] = set.joints.as_slice() else {
+            panic!("three joints")
+        };
+        assert!(
+            first.answered
+                && first
+                    .position
+                    .is_some_and(|p| (p.to_degrees() - 12.3).abs() < 1e-9)
+        );
+        assert_eq!(
+            (first.mode, first.voltage, first.load_percent),
+            ("ARMED", 4.9, -5.0)
+        );
+        assert_eq!((second.mode, second.position), ("OFF", None));
+        assert_eq!((third.mode, third.fault), ("FAULT", "bus write"));
+        assert!(parse_bench_set(&[0, 1, 2]).is_err());
+        Ok(())
+    }
 }

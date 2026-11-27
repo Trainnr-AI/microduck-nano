@@ -36,7 +36,7 @@ usage:
       inference alone on made-up observations. Needs no firmware.
   duckd run --robot robot.json [--hz 50] [--seconds 10] [--exchange state|step|two-reads] [--policy DEPLOYMENT]
             [--command FORWARD,SIDEWAYS,TURN] [--listen DEVICE] [--chase U,V [--ball-mm 40] [--fov 60]
-            [--device /dev/video0]] [--record FILE.mcap] [--socket PATH]
+            [--device auto]] [--record FILE.mcap] [--socket PATH]
       Run the control loop (nothing here arms the robot): read the state every tick, pass a target through the rigrs
       guards (the policy's, or hold-in-place), and report round-trip time to the microcontroller and missed deadlines.
         state      one read per tick (default; sends nothing)
@@ -58,11 +58,21 @@ usage:
       look straight ahead of the body. Not tried on a robot: none walks yet.
       With --record, every tick's measured joints, sent targets and IMU go into an MCAP file (ROS 2 messages) that
       trainnr's ingest_recording reads.
+  duckd bench-set --joints NAME,NAME,... --supervised [--excite steps] [--period S] [--amplitude 10] [--seconds 10]
+                  [--hz 25] [--record FILE.mcap] [--socket PATH]
+      MOVES SEVERAL SERVOS TOGETHER, each a little around where it is (+- amplitude degrees: a sine every
+      --period seconds, 2 if not given, faded in and out). Needs what `duckd bench` needs, for every joint named.
+      The firmware arms them all or none, keeps each inside its own limits and speed limit, and switches them all
+      off when any one faults or duckd stops talking. Prints the lowest voltage and the highest load each of them
+      read: how the supply holds with several servos working.
+      With --excite steps they all jump from one end to the other at the same instant (there and back every
+      --period seconds, 1 if not given): the most the set can ask of the supply at once without a load on it.
+      With --amplitude 0 they hold still, for loading them by hand.
   duckd listen --device DEVICE [--seconds 10]
       Listen to a microphone and print what is heard: the level and the room's noise twice a second, and each
       group of claps. DEVICE is an ALSA capture device as `arecord -L` names it (for example plughw:1,0). Needs
       `arecord` on the board and no firmware. Not tried with a microphone yet.
-  duckd pet --joint NAME --supervised [--colour U,V] [--device /dev/video0] [--fov 60] [--seconds 30]
+  duckd pet --joint NAME --supervised [--colour U,V] [--device auto] [--fov 60] [--seconds 30]
               [--record FILE.mcap] [--socket PATH]
       MOVES ONE SERVO, as a small animal would. Needs what `duckd bench` needs: a bench build, the joint
       calibrated, the horn free, someone watching; say so with --supervised. With --colour the joint turns to
@@ -70,7 +80,7 @@ usage:
       position points); with nothing in sight it glances about. Hold the horn and it struggles in bursts; keep
       holding and it gives up and goes where the hand takes it for a while. The matrix shows its mood. The
       firmware's limits and faults stay in charge: fought hard enough, its overload check switches the servo off.
-  duckd see [--device /dev/video0] [--seconds 10] [--colour U,V] [--ball-mm 40] [--fov 60 | --at-mm 300]
+  duckd see [--device auto] [--seconds 10] [--colour U,V] [--ball-mm 40] [--fov 60 | --at-mm 300]
       Look for one coloured thing with the camera and print where it is twice a second: frames a second, its
       direction (degrees to the left of and above where the camera points), its size and, with --ball-mm, how
       far away it is. Without --colour the colour in the middle of the first frames is taken: hold the toy in
@@ -101,6 +111,7 @@ enum Command {
     PolicyTime,
     Run,
     Bench,
+    BenchSet,
     Listen,
     See,
     Pet,
@@ -119,6 +130,8 @@ struct Args {
     record: Option<String>,
     joint: Option<String>,
     excite: (&'static str, Excitation),
+    /// `bench-set --excite steps`: seconds for one whole there-and-back.
+    period_s: Option<f64>,
     amplitude_deg: f64,
     supervised: bool,
     /// `duckd say`'s text.
@@ -151,15 +164,16 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
         "policy-time" => Command::PolicyTime,
         "run" => Command::Run,
         "bench" => Command::Bench,
+        "bench-set" => Command::BenchSet,
         "listen" => Command::Listen,
         "see" => Command::See,
         "pet" => Command::Pet,
         other => return Err(format!("unknown command {other}")),
     };
     let mut args = Args { command, socket: ROUTER_SOCKET.into(), robot: None, hz: None, seconds: 10.0, count: 200,
-        exchange: Exchange::State, policy: None, record: None, joint: None, excite: CHIRP, amplitude_deg: 10.0,
-        supervised: false, text: None, walk: None, microphone: None, camera: "/dev/video0".into(), colour: None, chase: None,
-        ball_mm: None, fov_deg: 60.0, at_mm: None };
+        exchange: Exchange::State, policy: None, record: None, joint: None, excite: CHIRP, period_s: None,
+        amplitude_deg: 10.0, supervised: false, text: None, walk: None, microphone: None, camera: see::AUTO.into(),
+        colour: None, chase: None, ball_mm: None, fov_deg: 60.0, at_mm: None };
     while let Some(flag) = argv.next() {
         if flag == "--supervised" {
             args.supervised = true;
@@ -179,7 +193,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--robot" => args.robot = Some(value),
             "--policy" => args.policy = Some(value),
             "--record" => args.record = Some(value),
-            "--joint" => args.joint = Some(value),
+            "--joint" | "--joints" => args.joint = Some(value),
             "--listen" if command == Command::Run => args.microphone = Some(value),
             "--device" if command == Command::Listen => args.microphone = Some(value),
             "--device" if matches!(command, Command::See | Command::Pet | Command::Run) => args.camera = value,
@@ -214,6 +228,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     _ => return Err("--excite must be chirp or steps".into()),
                 }
             }
+            "--period" => args.period_s = Some(number(&flag, value)?),
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -250,6 +265,7 @@ fn main() -> ExitCode {
         Command::Time => with_bridge(&args, |b| time(&args, b)),
         Command::Run => with_bridge(&args, |b| run(&args, b)),
         Command::Bench => with_bridge(&args, |b| bench_command(&args, b)),
+        Command::BenchSet => with_bridge(&args, |b| bench_set_command(&args, b)),
         Command::Listen => listen(&args),
         Command::See => see_command(&args),
         Command::Pet => with_bridge(&args, |b| pet_command(&args, b)),
@@ -501,11 +517,12 @@ fn walk_on_two_claps(device: &str, command: Vec<f64>) -> Res<Arc<Direction>> {
 /// it, for the next half second only, so losing sight of it (or the camera) leaves the policy asked for nothing.
 fn chase_colour(args: &Args, colour: see::Chroma, ranges: [duck_runtime::policy::Range; 3]) -> Res<Arc<Direction>> {
     const SIGHT_LASTS: Duration = Duration::from_millis(500);
-    let mut camera = see::camera(&args.camera)?;
+    let device = see::find_camera(&args.camera)?;
+    let mut camera = see::camera(&device)?;
     let (lens, ball_m, chase) = (Lens::from_fov(args.fov_deg), args.ball_mm.map(|mm| mm / 1000.0), Chase::default());
     let direction = Arc::new(Direction::new());
     let shared = Arc::clone(&direction);
-    println!("chasing the colour {},{} seen through {}", colour.u, colour.v, args.camera);
+    println!("chasing the colour {},{} seen through {}", colour.u, colour.v, device);
     std::thread::spawn(move || {
         let (mut frame, mut caught) = (Vec::new(), false);
         while matches!(see::read_frame(&mut camera, &mut frame), Ok(true)) {
@@ -557,9 +574,10 @@ fn listen(args: &Args) -> Res {
 fn see_command(args: &Args) -> Res {
     /// The smallest patch taken for the thing: 12 cells, about 7 x 7 pixels.
     const MIN_CELLS: usize = 12;
-    let mut camera = see::camera(&args.camera)?;
+    let device = see::find_camera(&args.camera)?;
+    let mut camera = see::camera(&device)?;
     stop_on_signal(false)?;
-    println!("looking through {} for {} s", args.camera, args.seconds);
+    println!("looking through {} for {} s", device, args.seconds);
     let mut frame = Vec::new();
     let (mut colour, mut lens) = (args.colour, Lens::from_fov(args.fov_deg));
     let ball_m = args.ball_mm.map(|mm| mm / 1000.0);
@@ -607,7 +625,7 @@ fn see_command(args: &Args) -> Res {
         }
     }
     if frames == 0 {
-        return Err(format!("no frames came from {}: is it the camera? (`v4l2-ctl --list-devices`)", args.camera).into());
+        return Err(format!("no frames came from {}: is it the camera? (`v4l2-ctl --list-devices`)", device).into());
     }
     println!("{frames} frames in {:.1} s; the colour was in sight in {found}", begin.elapsed().as_secs_f64());
     if args.at_mm.is_some() {
@@ -622,7 +640,8 @@ type Sighting = Arc<Mutex<Option<(Instant, f64)>>>;
 
 /// Watch the camera on a thread of its own.
 fn watch_colour(args: &Args, colour: see::Chroma) -> Res<Sighting> {
-    let mut camera = see::camera(&args.camera)?;
+    let device = see::find_camera(&args.camera)?;
+    let mut camera = see::camera(&device)?;
     let lens = Lens::from_fov(args.fov_deg);
     let seen = Arc::new(Mutex::new(None));
     let report = Arc::clone(&seen);
@@ -722,6 +741,197 @@ fn pet_command(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
         let reads = recorder.bench(name, &samples)?;
         recorder.finish()?;
         println!("recorded {} targets and {reads} servo reads to {path}", samples.len());
+    }
+    Ok(())
+}
+
+/// `duckd bench-set`: several servos armed together, each swinging a little around where it is.
+fn bench_set_command(args: &Args, bridge: &mut Bridge<UnixStream>) -> Res {
+    let wanted = args
+        .joint
+        .as_deref()
+        .ok_or("bench-set needs --joints NAME,NAME,...")?;
+    let mut mask = 0u32;
+    for name in wanted.split(',').map(str::trim) {
+        let joint = JOINT_NAMES
+            .iter()
+            .position(|n| *n == name)
+            .ok_or_else(|| format!("no joint `{name}`; the joints are {JOINT_NAMES:?}"))?;
+        mask |= 1 << joint;
+    }
+    if !args.supervised {
+        return Err("bench-set moves servos. Run it only with every one of them free to turn and someone watching \
+                    with the power at hand, and say so with --supervised"
+            .into());
+    }
+    if !firmware::info(bridge)?.bench_build {
+        return Err(
+            "the firmware is not a bench build (DUCK_ENABLE_MOTION 1 and DUCK_BENCH_MOTION 1)"
+                .into(),
+        );
+    }
+    let mut recorder = args.record.as_deref().map(Recorder::create).transpose()?;
+    stop_on_signal(false)?;
+    let hz = args.hz.unwrap_or(25.0);
+    let amplitude = args.amplitude_deg.to_radians();
+    let in_set = |j: usize| mask & (1 << j) != 0;
+    // Steps: every servo jumps between the two ends at the same instant, which is the most the set can ask of the
+    // supply at once (the firmware still holds each to its speed limit). Otherwise a slow sine.
+    let steps = args.excite.0 == "steps";
+    let cycle_s = args.period_s.unwrap_or(if steps { 1.0 } else { 2.0 });
+    if cycle_s.is_nan() || cycle_s <= 0.0 {
+        return Err("--period must be more than zero".into());
+    }
+    struct Seen {
+        ticks: u32,
+        lost: u32,
+        lowest_v: f64,
+        peak_load: f64,
+        /// Per joint: the lowest voltage and the highest load it read.
+        worst: Vec<(f64, f64)>,
+        stopped: Option<String>,
+        last: Option<firmware::BenchSet>,
+    }
+    // From the arm request on, every way out goes through the disarm below: even a lost reply may have armed it.
+    let outcome = (|| -> Res<Seen> {
+        firmware::benchset_arm(bridge, mask)?
+            .map_err(|why| format!("the firmware refused to arm the set: {why}"))?;
+        let first = firmware::benchset_step(bridge, &[None; JOINT_NAMES.len()])?;
+        let start: Vec<Option<f64>> = first
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(j, s)| s.position.filter(|_| in_set(j)))
+            .collect();
+        println!(
+            "{} servos armed; each +- {} deg around where it is, {} every {cycle_s} s, for {} s at {hz} Hz",
+            first.armed(),
+            args.amplitude_deg,
+            if steps { "all stepping together" } else { "a sine" },
+            args.seconds
+        );
+        let mut seen = Seen {
+            ticks: 0,
+            lost: 0,
+            lowest_v: f64::INFINITY,
+            peak_load: 0.0,
+            worst: vec![(f64::INFINITY, 0.0); JOINT_NAMES.len()],
+            stopped: None,
+            last: None,
+        };
+        let (begin, period) = (std::time::Instant::now(), Duration::from_secs_f64(1.0 / hz));
+        let mut lost_in_a_row = 0;
+        while !STOP.load(Ordering::Relaxed) {
+            let t = begin.elapsed().as_secs_f64();
+            if t >= args.seconds {
+                break;
+            }
+            // Faded in and out over a second, so nothing starts or ends with a jerk.
+            let fade = t.min(args.seconds - t).clamp(0.0, 1.0);
+            let wave = (std::f64::consts::TAU * t / cycle_s).sin();
+            // A step run ends back where it began: the last second is spent there.
+            let swing = if steps {
+                if args.seconds - t < 1.0 {
+                    0.0
+                } else {
+                    amplitude * wave.signum()
+                }
+            } else {
+                amplitude * fade * wave
+            };
+            let targets: Vec<Option<f64>> = start.iter().map(|s| s.map(|s| s + swing)).collect();
+            match firmware::benchset_step(bridge, &targets) {
+                Ok(set) => {
+                    lost_in_a_row = 0;
+                    seen.ticks += 1;
+                    for ((j, s), joint_name) in set
+                        .joints
+                        .iter()
+                        .enumerate()
+                        .zip(JOINT_NAMES)
+                        .filter(|((j, _), _)| in_set(*j))
+                    {
+                        if s.answered {
+                            seen.lowest_v = seen.lowest_v.min(s.voltage);
+                            seen.peak_load = seen.peak_load.max(s.load_percent.abs());
+                            if let Some(w) = seen.worst.get_mut(j) {
+                                *w = (w.0.min(s.voltage), w.1.max(s.load_percent.abs()));
+                            }
+                        }
+                        if s.mode != "ARMED" && seen.stopped.is_none() {
+                            seen.stopped = Some(format!(
+                                "`{joint_name}` went {} ({}), joint {j}",
+                                s.mode, s.fault
+                            ));
+                        }
+                    }
+                    if let Some(recorder) = recorder.as_mut() {
+                        let sensed = firmware::Sensed {
+                            joints: set
+                                .joints
+                                .iter()
+                                .map(|s| s.position.filter(|_| s.answered))
+                                .collect(),
+                            pitch_roll: None,
+                            angular_velocity: None,
+                            joint_speeds: vec![],
+                        };
+                        let sent: Vec<f64> =
+                            targets.iter().map(|t| t.unwrap_or(f64::NAN)).collect();
+                        recorder.tick(&sensed, Some(&sent))?;
+                    }
+                    let over = seen.stopped.is_some();
+                    seen.last = Some(set);
+                    if over {
+                        break;
+                    }
+                }
+                Err(_) if lost_in_a_row < 3 => {
+                    lost_in_a_row += 1;
+                    seen.lost += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+            std::thread::sleep(period.saturating_sub(begin.elapsed() - Duration::from_secs_f64(t)));
+        }
+        Ok(seen)
+    })();
+    let disarmed = firmware::bench_disarm(bridge);
+    let seen = outcome?;
+    disarmed?;
+    println!("switched off. {} ticks", seen.ticks);
+    if seen.lost > 0 {
+        println!(
+            "{} exchange(s) with the firmware failed and were passed over",
+            seen.lost
+        );
+    }
+    if let Some(why) = &seen.stopped {
+        println!("ended early: {why}; the others were switched off with it");
+    }
+    if seen.lowest_v.is_finite() {
+        println!(
+            "lowest voltage any servo read: {:.1} V; highest load: {:.1} %",
+            seen.lowest_v, seen.peak_load
+        );
+    }
+    if let Some(set) = &seen.last {
+        for (((j, s), joint_name), (low_v, top_load)) in set
+            .joints
+            .iter()
+            .enumerate()
+            .zip(JOINT_NAMES)
+            .zip(&seen.worst)
+            .filter(|(((j, _), _), _)| in_set(*j))
+        {
+            let at = s
+                .position
+                .map_or("?".into(), |p| format!("{:.1}", p.to_degrees()));
+            println!("  {j:>2} {joint_name:<16} {:<5} {:<20} at {at} deg  lowest {low_v:.1} V  highest load {top_load:.1} %", s.mode, s.fault);
+        }
+    }
+    if let (Some(recorder), Some(path)) = (recorder.take(), &args.record) {
+        println!("recorded {} ticks to {path}", recorder.finish()?);
     }
     Ok(())
 }

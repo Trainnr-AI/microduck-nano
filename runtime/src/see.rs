@@ -178,9 +178,49 @@ pub struct Camera {
     frames: ChildStdout,
 }
 
+/// What to pass as the device to have the camera found: the first video device that offers YUYV frames.
+pub const AUTO: &str = "auto";
+
+/// Whether `v4l2-ctl --list-formats` printed YUYV among a device's formats. A board has video devices that are
+/// not cameras (the UNO Q's video encoder and decoder are `/dev/video0` and `1` after some boots); they list
+/// none, and streaming from one waits for ever.
+fn lists_yuyv(formats: &str) -> bool {
+    formats.lines().any(|line| line.contains("'YUYV'"))
+}
+
+fn offers_yuyv(device: &str) -> bool {
+    Command::new("v4l2-ctl")
+        .args(["-d", device, "--list-formats"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|out| lists_yuyv(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// The video device to use: `device` itself if it offers YUYV frames, or for [`AUTO`] the first of
+/// `/dev/video0` to `/dev/video9` that does. The number a camera gets can change from one boot to the next.
+pub fn find_camera(device: &str) -> io::Result<String> {
+    if device != AUTO {
+        return if offers_yuyv(device) {
+            Ok(device.to_string())
+        } else {
+            Err(io::Error::other(format!(
+                "{device} offers no YUYV frames (not a camera, not there, or v4l2-ctl from v4l-utils is missing); try --device {AUTO}"
+            )))
+        };
+    }
+    (0..10)
+        .map(|n| format!("/dev/video{n}"))
+        .find(|d| std::path::Path::new(d).exists() && offers_yuyv(d))
+        .ok_or_else(|| io::Error::other("no video device offers YUYV frames: is the camera plugged in, and v4l2-ctl (v4l-utils) installed?"))
+}
+
 /// Start streaming uncompressed frames of [`WIDTH`] x [`HEIGHT`] from the video device `device` (for example
-/// `/dev/video0`), 30 a second if the light allows: with automatic exposure a camera slows down in a dim room.
+/// `/dev/video2`, or [`AUTO`] to have it found), 30 a second if the light allows: with automatic exposure a
+/// camera slows down in a dim room.
 pub fn camera(device: &str) -> io::Result<Camera> {
+    let device = find_camera(device)?;
+    let device = device.as_str();
     let mut child = Command::new("v4l2-ctl")
         .args(["-d", device])
         .arg(format!("--set-fmt-video=width={WIDTH},height={HEIGHT},pixelformat=YUYV"))
@@ -219,5 +259,19 @@ pub fn read_frame(from: &mut impl Read, frame: &mut Vec<u8>) -> io::Result<bool>
         Ok(()) => Ok(true),
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::lists_yuyv;
+
+    #[test]
+    fn a_camera_lists_yuyv_and_an_encoder_does_not() {
+        let camera = "ioctl: VIDIOC_ENUM_FMT\n\tType: Video Capture\n\n\t[0]: 'MJPG' (Motion-JPEG, compressed)\n\t[1]: 'YUYV' (YUYV 4:2:2)\n";
+        let encoder = "ioctl: VIDIOC_ENUM_FMT\n\tType: Video Capture Multiplanar\n\n\t[0]: 'H264' (H.264, compressed)\n";
+        assert!(lists_yuyv(camera));
+        assert!(!lists_yuyv(encoder));
+        assert!(!lists_yuyv(""));
     }
 }
