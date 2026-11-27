@@ -15,15 +15,16 @@ From Arduino's documentation, relevant to this build:
 
 - **D0 / D1 are `Serial1` on UNO Q core 0.55 and later, but `Serial` on older cores**, where `Serial1` is the Bridge's own
   link and must not be touched. The sketch picks the right one at compile time and reports it (`servo_uart_is_serial1`).
-- **USB host mode is not automatic when the board is powered from VIN or 5V** instead of USB-C: the camera will not be
-  powered or detected until two pins on the JCTL header are bridged ("Force USB Host Mode on UNO Q" in Arduino's docs).
-  JCTL is 1.8 V logic.
+- **The USB-C port supplies no power when the board is fed from VIN** (seen on 2026-11-27, on a 3S LiPo): the port
+  is already in host mode, but its 5 V output stays off, so a camera plugged into it is not powered and does not
+  appear. Arduino's forum calls this unsupported. A camera on a battery-powered robot needs its 5 V from somewhere
+  else (its own regulator, or a powered hub). Not solved here yet.
 - **`Serial` in a sketch is the Bridge's monitor**, not a UART. A library that prints through `Serial` before
   `Bridge.begin()` never returns, and the sketch's functions never appear on the Linux side ("method ... not
   available"). The IMU library does this when it finds the sensor, so the firmware starts the IMU after the Bridge.
 - **The camera, tried on 2026-11-18** (Waveshare OV5640 USB camera, USB ID `1bcf:c001`, on a hub on the UNO Q's
   USB-C port, the board reached over Wi-Fi): Linux finds it as a standard UVC camera at `/dev/video2` with no driver
-  to install. It offers MJPEG from 320 x 240 to 2592 x 1944 (30 frames a second listed up to 1920 x 1080, 15 at full
+  to install (the number can change from one start to the next; `duckd` finds it by itself). It offers MJPEG from 320 x 240 to 2592 x 1944 (30 frames a second listed up to 1920 x 1080, 15 at full
   size) and uncompressed YUYV (30 a second only up to 640 x 480), with autofocus and auto exposure. In a dimly lit
   room it delivered about 15 frames a second at every size, the listed 30 included; it was not tried in good
   light. One 1280 x 720 MJPEG frame is about 90 KB. `v4l2-ctl` is on the board; `ffmpeg`, GStreamer's tools and

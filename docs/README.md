@@ -28,6 +28,8 @@ These describe the state on their date and are expected to go stale.
 | [roadmap.md](project/roadmap.md) | What works today, what is designed, what comes next |
 | [design-review-2026-11-14.md](project/design-review-2026-11-14.md) | Independent review of the mechanical design: PASS / FAIL per check, safety findings |
 | [scs0009.md](project/scs0009.md) | The servo: Feetech's specification, what follows from it, what the simulation assumes, what one servo did on the bench |
+| [bench-test-2026-11-25.md](project/bench-test-2026-11-25.md) | Everything the board can do, run once on the rig with the camera: results, a camera fault fixed, the camera's heat |
+| [bench-test-2026-11-27.md](project/bench-test-2026-11-27.md) | All fifteen servos on the battery: every one works, the 5 V supply does not hold them, a long servo chain loses a volt |
 | [uno-q-compute.md](project/uno-q-compute.md) | What the UNO Q can run: policies, vision, language models, CPU against GPU |
 | [rigrs-for-general-use.md](project/rigrs-for-general-use.md) | What Trainnr's Rust firmware framework lacks for a robot it was not written for, and how the Nano will use it |
 | [prior-art.md](project/prior-art.md) | What Pollen's Microduck and Luwu's XGO-Duck are built from and working on, and what we take from them |

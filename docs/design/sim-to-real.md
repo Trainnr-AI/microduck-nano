@@ -116,6 +116,26 @@ in training the episode ends instead.
   a walk during which something else moves the head
   ([trainnr#145](https://github.com/Trainnr-AI/trainnr/issues/145)).
 
+- **A fourth run, with the delay the bench measured: it stays up when its actions are late, and it stands.**
+  The one number the servo fit pinned is the delay from command to motion, 21.6 ms
+  ([scs0009.md](../project/scs0009.md)). The run `nano-walk-04-rig` (2026-11-25, 2,300 iterations, 5,655 s) is the
+  third run again (task `nano-walk-rig`, `legged-walk@0f77bca6e684`: the same commands, `dr_span: 0.05`, still
+  without effect) with one thing added: in training every servo command arrives 0 to 25 ms late, drawn again each
+  second (`train_walk(lag_dr_ms=25)`). Judged over 40 trials each:
+
+  | Policy | As trained for | Action one control tick (20 ms) late |
+  |---|---|---|
+  | third run, `nano-walk-03-fast` | up in 40, median error 0.67 of the command (`...p41878d@f66d94cd14a9`) | **up in 0**, falls after a median 189 steps of 1,000 (`...delay-1-...p5ff370@ebf759e23dec`) |
+  | fourth run, `nano-walk-04-rig` | up in 40, median error 0.99 of the command (`...pef0b82@01f58d76fb11`) | up in 39, median error 0.97 (`...delay-1-...p46a59c@a6d4d7b1ce3c`) |
+
+  Two readings. The third run's walk, the only one that covers ground, would fall on the real robot within four
+  seconds from the delay alone: no walk trained without the delay is worth putting on the robot. And with the
+  delay in training, the policy found the other way to stay up: an error equal to the command means it does not
+  go forward at all, as the second run did not. A late action makes stepping riskier, and the reward that should
+  pay for stepping anyway is the wide one of
+  [trainnr#146](https://github.com/Trainnr-AI/trainnr/issues/146). So that issue now blocks every useful walk,
+  not only the slow one.
+
 ### What it looks like
 
 Taken on 2026-11-22 while `nano-walk-01@1152cce0df90` was at about iteration 3,550 of 8,000. Everything here is

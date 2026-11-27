@@ -4,12 +4,13 @@ An open build of **Microduck Nano**, a smaller variant of the Microduck walking 
 
 Microduck is a small duck biped by [Pollen Robotics](https://github.com/pollen-robotics/microduck_rl). [XGO-Duck](https://github.com/LuwuDynamics/xgoduck_hardware) by Luwu Dynamics adapts it for Feetech 1910 servos and an Arduino UNO Q. Microduck Nano is XGO-Duck redesigned around 9 g hobby-size bus servos. This repository follows the build from parts to a walking policy on the real robot, using [trainnr](https://github.com/Trainnr-AI/trainnr) for the sim, training and deployment work.
 
-> **Status: design closed for a first build (2026-11-18), nothing printed.** The robot exists as CAD and a simulation
-> model. An [independent review](docs/project/design-review-2026-11-14.md) found problems; the design's answers to
-> them (new limits, a regulator window, no battery protection electronics by the owner's choice) have not been
+> **Status: design closed for a first build (2026-11-18); parts are being printed and wired, nothing is assembled.**
+> The robot exists as CAD and a simulation model. An
+> [independent review](docs/project/design-review-2026-11-14.md) found problems; the design's answers to them (new limits, a regulator window, no battery protection electronics by the owner's choice) have not been
 > reviewed again, and it is **not yet safe to build for children**. Firmware runs on an Arduino UNO Q with the IMU
-> and holds the closed design's joint limits and leg rules; motion is locked off by default, and so far only one
-> or two servos at a time have moved, on a bench. All fifteen servos have their IDs. A first walk has been
+> and holds the closed design's joint limits and leg rules; motion is locked off by default. All fifteen
+> servos have their IDs and have moved together, loose on a bench, a few degrees; the 5 V supply
+> [does not hold them](docs/project/bench-test-2026-11-27.md) under more than that. A first walk has been
 > trained in simulation on a servo model nobody has measured yet: it stays on its feet and does not yet follow the
 > speed it is asked for. No trained policy has run on the robot.
 
